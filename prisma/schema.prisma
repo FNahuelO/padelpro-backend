@@ -1,0 +1,388 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  password      String
+  name          String
+  photo         String?
+  phone         String?
+  gender        String?   // "Masculino" | "Femenino" | "Otro"
+  birthDate     DateTime?
+  description   String?
+  location      String?
+  rating        Int       @default(1000)
+  weeklyPoints  Int       @default(0)
+  monthlyPoints Int       @default(0)
+  seasonPoints  Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Preferencias de jugador
+  sports            String[]  @default(["Pádel"])
+  preferredHand     String?   // "Derecha" | "Izquierda"
+  courtPosition     String?   // "Lado derecho" | "Lado izquierdo"
+  matchType         String?   // "Competitivo" | "Amistoso"
+  preferredPlayTime String?   // "Mañana" | "Tarde" | "Noche"
+
+  // Relations
+  availabilities      Availability[]
+  matchRequests       MatchRequest[]
+  matchParticipants   MatchParticipant[]
+  sentFriendRequests  FriendRequest[] @relation("SentRequests")
+  receivedFriendRequests FriendRequest[] @relation("ReceivedRequests")
+  sentDirectMessages  DirectMessage[] @relation("Sender")
+  receivedDirectMessages DirectMessage[] @relation("Receiver")
+  chatMessages        ChatMessage[]
+  weeklyPointsRecords WeeklyPoints[]
+  reports             Report[] @relation("Reporter")
+  reportedBy          Report[] @relation("Reported")
+  blockedUsers        BlockedUser[] @relation("Blocker")
+  blockedBy          BlockedUser[] @relation("Blocked")
+
+  @@map("users")
+}
+
+model Club {
+  id          String   @id @default(uuid())
+  name        String
+  address     String
+  description String?
+  plan        ClubPlan @default(BASIC)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  courts       Court[]
+  matches      Match[]
+  promotions   ClubPromotion[]
+  weeklyPoints WeeklyPoints[]
+
+  @@map("clubs")
+}
+
+enum ClubPlan {
+  BASIC
+  PLUS
+}
+
+model Court {
+  id        String   @id @default(uuid())
+  clubId    String
+  name      String
+  surface   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@map("courts")
+}
+
+model Availability {
+  id        String   @id @default(uuid())
+  userId    String
+  dayOfWeek Int      // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+  startHour Int      // 0-23
+  endHour   Int      // 0-23
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dayOfWeek, startHour, endHour])
+  @@map("availabilities")
+}
+
+model MatchRequest {
+  id          String    @id @default(uuid())
+  userId      String
+  clubId      String?
+  date        DateTime
+  startHour   Int
+  endHour     Int
+  minRating   Int?
+  maxRating   Int?
+  category    String?   // e.g., "A", "B", "C"
+  status      MatchRequestStatus @default(PENDING)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("match_requests")
+}
+
+enum MatchRequestStatus {
+  PENDING
+  MATCHED
+  EXPIRED
+}
+
+model Match {
+  id                String      @id @default(uuid())
+  clubId            String?
+  courtId            String?
+  date              DateTime
+  startHour         Int
+  endHour           Int
+  status            MatchStatus @default(PENDING)
+  bonusPointsApplied Int        @default(0)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  club              Club?        @relation(fields: [clubId], references: [id])
+  participants     MatchParticipant[]
+  result            MatchResult?
+  chatMessages      ChatMessage[]
+
+  @@map("matches")
+}
+
+enum MatchStatus {
+  PENDING
+  CONFIRMED
+  CANCELED
+  COMPLETED
+}
+
+model MatchParticipant {
+  id          String    @id @default(uuid())
+  matchId     String
+  userId      String
+  team        Team      // A or B
+  isCaptain   Boolean   @default(false)
+  confirmedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@unique([matchId, userId])
+  @@map("match_participants")
+}
+
+enum Team {
+  A
+  B
+}
+
+model MatchResult {
+  id          String   @id @default(uuid())
+  matchId     String   @unique
+  teamAScore  Int
+  teamBScore  Int
+  submittedBy String   // userId
+  createdAt   DateTime @default(now())
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@map("match_results")
+}
+
+model WeeklyPoints {
+  id          String   @id @default(uuid())
+  userId      String
+  clubId      String?
+  weekStartDate DateTime
+  points      Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  club Club? @relation(fields: [clubId], references: [id])
+
+  @@unique([userId, clubId, weekStartDate])
+  @@map("weekly_points")
+}
+
+model RankingSnapshot {
+  id          String            @id @default(uuid())
+  type        RankingType
+  clubId      String?
+  category    String?
+  generatedAt DateTime          @default(now())
+  entries     Json              // Array of {userId, name, rating, points, position}
+
+  @@map("ranking_snapshots")
+}
+
+enum RankingType {
+  WEEKLY
+  MONTHLY
+  SEASON
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  matchId   String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@map("chat_messages")
+}
+
+// FASE 2: Friends
+model FriendRequest {
+  id        String             @id @default(uuid())
+  fromUserId String
+  toUserId   String
+  status    FriendRequestStatus @default(PENDING)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  fromUser User @relation("SentRequests", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("ReceivedRequests", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@map("friend_requests")
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+model DirectMessage {
+  id        String   @id @default(uuid())
+  roomKey   String   // Format: "userId1_userId2" (sorted)
+  fromUserId String
+  toUserId   String
+  content   String
+  createdAt DateTime @default(now())
+
+  fromUser User @relation("Sender", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("Receiver", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([roomKey, createdAt])
+  @@map("direct_messages")
+}
+
+// FASE 2: Master
+model Season {
+  id          String   @id @default(uuid())
+  name        String
+  startDate   DateTime
+  endDate     DateTime
+  status      SeasonStatus @default(UPCOMING)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  masterEvents MasterEvent[]
+
+  @@map("seasons")
+}
+
+enum SeasonStatus {
+  UPCOMING
+  ACTIVE
+  COMPLETED
+}
+
+model MasterEvent {
+  id          String   @id @default(uuid())
+  seasonId    String
+  name        String
+  eventDate   DateTime?
+  status      MasterEventStatus @default(UPCOMING)
+  bracket     Json?    // Tournament bracket structure
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  season Season @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  participants MasterParticipant[]
+
+  @@map("master_events")
+}
+
+enum MasterEventStatus {
+  UPCOMING
+  REGISTRATION
+  IN_PROGRESS
+  COMPLETED
+}
+
+model MasterParticipant {
+  id          String   @id @default(uuid())
+  masterEventId String
+  userId1     String
+  userId2     String   // Partner
+  seed        Int?     // Tournament seed
+  createdAt   DateTime @default(now())
+
+  masterEvent MasterEvent @relation(fields: [masterEventId], references: [id], onDelete: Cascade)
+
+  @@unique([masterEventId, userId1, userId2])
+  @@map("master_participants")
+}
+
+// FASE 2: Club Promotions
+model ClubPromotion {
+  id          String   @id @default(uuid())
+  clubId      String
+  dayOfWeek   Int      // 0-6
+  startHour   Int      // 0-23
+  endHour     Int      // 0-23
+  bonusPoints Int      @default(10)
+  priority    Int      @default(0) // Higher = more priority in matchmaking
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@map("club_promotions")
+}
+
+// FASE 2: Reports
+model Report {
+  id            String   @id @default(uuid())
+  matchId       String?
+  reporterId    String
+  reportedUserId String
+  reason        String
+  status        ReportStatus @default(PENDING)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  reporter      User @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser  User @relation("Reported", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@map("reports")
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  RESOLVED
+  DISMISSED
+}
+
+model BlockedUser {
+  id          String   @id @default(uuid())
+  blockerId  String
+  blockedId  String
+  createdAt   DateTime @default(now())
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@map("blocked_users")
+}
+
