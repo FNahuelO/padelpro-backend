@@ -8,21 +8,21 @@ export declare class AvailabilityService {
         endHour: number;
     }>): Promise<{
         id: string;
-        userId: string;
-        dayOfWeek: number;
-        startHour: number;
-        endHour: number;
         createdAt: Date;
         updatedAt: Date;
+        startHour: number;
+        endHour: number;
+        userId: string;
+        dayOfWeek: number;
     }[]>;
     getMyAvailability(userId: string): Promise<{
         id: string;
-        userId: string;
-        dayOfWeek: number;
-        startHour: number;
-        endHour: number;
         createdAt: Date;
         updatedAt: Date;
+        startHour: number;
+        endHour: number;
+        userId: string;
+        dayOfWeek: number;
     }[]>;
     deleteSlot(userId: string, slotId: string): Promise<{
         message: string;
@@ -33,12 +33,12 @@ export declare class AvailabilityService {
         endHour?: number;
     }): Promise<{
         id: string;
-        userId: string;
-        dayOfWeek: number;
-        startHour: number;
-        endHour: number;
         createdAt: Date;
         updatedAt: Date;
+        startHour: number;
+        endHour: number;
+        userId: string;
+        dayOfWeek: number;
     }>;
     addSlot(userId: string, slot: {
         dayOfWeek: number;
@@ -46,12 +46,12 @@ export declare class AvailabilityService {
         endHour: number;
     }): Promise<{
         id: string;
-        userId: string;
-        dayOfWeek: number;
-        startHour: number;
-        endHour: number;
         createdAt: Date;
         updatedAt: Date;
+        startHour: number;
+        endHour: number;
+        userId: string;
+        dayOfWeek: number;
     }>;
     findAvailableUsers(params: {
         date: Date;

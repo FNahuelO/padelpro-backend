@@ -18,25 +18,25 @@ export declare class MatchmakingService {
         category?: string;
     }): Promise<{
         id: string;
-        userId: string;
-        startHour: number;
-        endHour: number;
         createdAt: Date;
         updatedAt: Date;
+        status: import("@prisma/client").$Enums.MatchRequestStatus;
         clubId: string | null;
         date: Date;
+        startHour: number;
+        endHour: number;
+        userId: string;
         minRating: number | null;
         maxRating: number | null;
         category: string | null;
-        status: import("@prisma/client").$Enums.MatchRequestStatus;
     }>;
     runMatchmaking(matchRequestId: string): Promise<{
         club: {
             id: string;
-            createdAt: Date;
-            updatedAt: Date;
             name: string;
             description: string | null;
+            createdAt: Date;
+            updatedAt: Date;
             address: string;
             plan: import("@prisma/client").$Enums.ClubPlan;
         };
@@ -49,43 +49,43 @@ export declare class MatchmakingService {
             };
         } & {
             id: string;
-            userId: string;
             createdAt: Date;
+            matchId: string;
+            userId: string;
             team: import("@prisma/client").$Enums.Team;
             isCaptain: boolean;
             confirmedAt: Date | null;
-            matchId: string;
         })[];
     } & {
         id: string;
-        startHour: number;
-        endHour: number;
         createdAt: Date;
         updatedAt: Date;
-        clubId: string | null;
-        date: Date;
         status: import("@prisma/client").$Enums.MatchStatus;
+        clubId: string | null;
         courtId: string | null;
+        date: Date;
+        startHour: number;
+        endHour: number;
         bonusPointsApplied: number;
     }>;
     getMyMatchRequests(userId: string): Promise<({
         user: {
             id: string;
-            name: string;
             email: string;
+            name: string;
         };
     } & {
         id: string;
-        userId: string;
-        startHour: number;
-        endHour: number;
         createdAt: Date;
         updatedAt: Date;
+        status: import("@prisma/client").$Enums.MatchRequestStatus;
         clubId: string | null;
         date: Date;
+        startHour: number;
+        endHour: number;
+        userId: string;
         minRating: number | null;
         maxRating: number | null;
         category: string | null;
-        status: import("@prisma/client").$Enums.MatchRequestStatus;
     })[]>;
 }
