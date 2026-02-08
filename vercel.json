@@ -1,16 +1,13 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "dist/src/serverless.js",
-      "use": "@vercel/node"
+  "buildCommand": "npx prisma generate && npx nest build",
+  "installCommand": "npm install",
+  "functions": {
+    "api/index.js": {
+      "includeFiles": ["dist/**", "node_modules/.prisma/**", "node_modules/@prisma/client/**"]
     }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "dist/src/serverless.js"
-    }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api" }
   ]
 }
-
