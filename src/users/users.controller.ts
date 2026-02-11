@@ -9,14 +9,22 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UpdateProfileDto, UpdatePreferencesDto } from './dto/update-profile.dto';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { v2 as cloudinary } from 'cloudinary';
+
+// Configurar Cloudinary con env vars
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
@@ -58,13 +66,7 @@ export class UsersController {
   @Post('photo')
   @UseInterceptors(
     FileInterceptor('photo', {
-      storage: diskStorage({
-        destination: './uploads',
-        filename: (_req, file, cb) => {
-          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-          cb(null, `photo-${uniqueSuffix}${extname(file.originalname)}`);
-        },
-      }),
+      storage: memoryStorage(),
       limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
       fileFilter: (_req, file, cb) => {
         if (!file.mimetype.match(/\/(jpg|jpeg|png|gif|webp)$/)) {
@@ -79,8 +81,35 @@ export class UsersController {
     @CurrentUser() user: any,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    const photoUrl = `/uploads/${file.filename}`;
-    await this.usersService.updateProfile(user.sub, { photo: photoUrl } as UpdateProfileDto);
+    if (!file) {
+      throw new BadRequestException('No se envió ninguna imagen');
+    }
+
+    // Subir a Cloudinary desde buffer
+    const photoUrl = await new Promise<string>((resolve, reject) => {
+      cloudinary.uploader
+        .upload_stream(
+          {
+            folder: 'padely/avatars',
+            public_id: `user-${user.sub}`,
+            overwrite: true,
+            transformation: [
+              { width: 400, height: 400, crop: 'fill', gravity: 'face' },
+              { quality: 'auto', fetch_format: 'auto' },
+            ],
+          },
+          (error, result) => {
+            if (error) return reject(error);
+            resolve(result!.secure_url);
+          },
+        )
+        .end(file.buffer);
+    });
+
+    await this.usersService.updateProfile(user.sub, {
+      photo: photoUrl,
+    } as UpdateProfileDto);
+
     return { photo: photoUrl };
   }
 
