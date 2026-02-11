@@ -13,8 +13,10 @@ import { FriendsModule } from './friends/friends.module';
 import { MasterModule } from './master/master.module';
 import { ReportsModule } from './reports/reports.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { HealthController } from './health/health.controller';
 
 @Module({
+  controllers: [HealthController],
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
