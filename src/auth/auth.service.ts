@@ -101,6 +101,20 @@ export class AuthService {
     };
   }
 
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const userData = await this.usersService.changePassword(userId, currentPassword, newPassword);
+
+    const isPasswordValid = await bcrypt.compare(currentPassword, userData.hash);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Contraseña actual incorrecta');
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await this.usersService.updatePasswordHash(userId, newHash);
+
+    return { message: 'Contraseña actualizada correctamente' };
+  }
+
   private generateToken(userId: string, email: string): string {
     return this.jwtService.sign({ sub: userId, email });
   }

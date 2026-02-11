@@ -369,10 +369,99 @@ export class UsersService {
     return this.prisma.user.update({
       where: { id: userId },
       data: {
-        weeklyPoints: {
-          increment: points,
+        weeklyPoints: { increment: points },
+        monthlyPoints: { increment: points },
+        seasonPoints: { increment: points },
+      },
+    });
+  }
+
+  /**
+   * Perfil público de un jugador (para ver desde otro usuario).
+   */
+  async getPublicProfile(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        photo: true,
+        gender: true,
+        description: true,
+        location: true,
+        rating: true,
+        mainClubId: true,
+        weeklyPoints: true,
+        monthlyPoints: true,
+        sports: true,
+        preferredHand: true,
+        courtPosition: true,
+        matchType: true,
+        preferredPlayTime: true,
+        createdAt: true,
+        mainClub: {
+          select: { id: true, name: true, zone: true },
         },
       },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    // Estadísticas
+    const matchesPlayed = await this.prisma.matchParticipant.count({
+      where: { userId, status: 'ACCEPTED' },
+    });
+
+    const completedMatches = await this.prisma.match.findMany({
+      where: {
+        status: 'COMPLETED',
+        participants: { some: { userId } },
+        result: { isNot: null },
+      },
+      include: {
+        participants: { where: { userId }, select: { team: true } },
+        result: true,
+      },
+    });
+
+    let wins = 0;
+    let losses = 0;
+    for (const match of completedMatches) {
+      const userTeam = match.participants[0]?.team;
+      if (match.result && userTeam) {
+        const teamAWon = match.result.teamAScore > match.result.teamBScore;
+        const userWon =
+          (userTeam === 'A' && teamAWon) || (userTeam === 'B' && !teamAWon);
+        if (userWon) wins++;
+        else losses++;
+      }
+    }
+
+    return {
+      ...user,
+      levelCategory: getLevelCategory(user.rating),
+      stats: { matches: matchesPlayed, wins, losses },
+      preferences: {
+        preferredHand: user.preferredHand,
+        courtPosition: user.courtPosition,
+        matchType: user.matchType,
+        preferredPlayTime: user.preferredPlayTime,
+      },
+    };
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Usuario no encontrado');
+    return { userId, currentPassword, newPassword, hash: user.password };
+  }
+
+  async updatePasswordHash(userId: string, newHash: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { password: newHash },
     });
   }
 }

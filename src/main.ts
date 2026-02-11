@@ -3,8 +3,12 @@ import { ValidationPipe } from '@nestjs/common';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import express from 'express';
+import { join } from 'path';
 
 const server = express();
+
+// Servir archivos estáticos de uploads
+server.use('/uploads', express.static(join(__dirname, '..', 'uploads')));
 
 export const createNestServer = async (): Promise<any> => {
   const app = await NestFactory.create(AppModule, new ExpressAdapter(server));

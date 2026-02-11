@@ -53,6 +53,9 @@ model User {
   reportedBy          Report[] @relation("Reported")
   blockedUsers        BlockedUser[] @relation("Blocker")
   blockedBy          BlockedUser[] @relation("Blocked")
+  notifications       Notification[]
+  masterParticipant1  MasterParticipant[] @relation("MasterPlayer1")
+  masterParticipant2  MasterParticipant[] @relation("MasterPlayer2")
 
   @@map("users")
 }
@@ -374,6 +377,7 @@ model MasterEvent {
 
   season Season @relation(fields: [seasonId], references: [id], onDelete: Cascade)
   participants MasterParticipant[]
+  masterMatches MasterMatch[]
 
   @@map("master_events")
 }
@@ -391,12 +395,46 @@ model MasterParticipant {
   userId1     String
   userId2     String   // Partner
   seed        Int?     // Tournament seed
+  eliminated  Boolean  @default(false)
   createdAt   DateTime @default(now())
 
   masterEvent MasterEvent @relation(fields: [masterEventId], references: [id], onDelete: Cascade)
+  user1       User @relation("MasterPlayer1", fields: [userId1], references: [id])
+  user2       User @relation("MasterPlayer2", fields: [userId2], references: [id])
+
+  matchesAsTeamA MasterMatch[] @relation("MasterTeamA")
+  matchesAsTeamB MasterMatch[] @relation("MasterTeamB")
 
   @@unique([masterEventId, userId1, userId2])
   @@map("master_participants")
+}
+
+model MasterMatch {
+  id              String   @id @default(uuid())
+  masterEventId   String
+  round           Int      // 1 = final, 2 = semifinal, 4 = cuartos, etc.
+  position        Int      // Posición dentro de la ronda
+  teamAId         String?
+  teamBId         String?
+  teamAScore      Int?
+  teamBScore      Int?
+  winnerId        String?  // Id del MasterParticipant ganador
+  status          MasterMatchStatus @default(PENDING)
+  scheduledDate   DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  masterEvent MasterEvent @relation(fields: [masterEventId], references: [id], onDelete: Cascade)
+  teamA       MasterParticipant? @relation("MasterTeamA", fields: [teamAId], references: [id])
+  teamB       MasterParticipant? @relation("MasterTeamB", fields: [teamBId], references: [id])
+
+  @@map("master_matches")
+}
+
+enum MasterMatchStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
 }
 
 // FASE 2: Club Promotions
@@ -452,5 +490,33 @@ model BlockedUser {
 
   @@unique([blockerId, blockedId])
   @@map("blocked_users")
+}
+
+// Notificaciones in-app
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?            // metadata adicional (matchId, rankingPosition, etc)
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  MATCH_INVITE
+  MATCH_CONFIRMED
+  MATCH_CANCELED
+  RANKING_OVERTAKEN
+  RANKING_WEEKLY_WINNER
+  FRIEND_REQUEST
+  MASTER_REGISTRATION
+  MASTER_UPDATE
 }
 

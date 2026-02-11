@@ -189,6 +189,96 @@ export class RankingsService {
     return entries;
   }
 
+  /**
+   * Jugador de la semana para un club.
+   * Retorna el jugador con más puntos en la semana actual.
+   */
+  async getPlayerOfTheWeek(clubId: string) {
+    const currentWeekKey = getWeekKey();
+
+    const topPlayer = await this.prisma.pointsEvent.groupBy({
+      by: ['playerId'],
+      where: {
+        clubId,
+        weekKey: currentWeekKey,
+      },
+      _sum: { points: true },
+      orderBy: { _sum: { points: 'desc' } },
+      take: 1,
+    });
+
+    if (topPlayer.length === 0) {
+      return null;
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: topPlayer[0].playerId },
+      select: {
+        id: true,
+        name: true,
+        photo: true,
+        rating: true,
+      },
+    });
+
+    if (!user) return null;
+
+    return {
+      ...user,
+      levelCategory: getLevelCategory(user.rating),
+      weeklyPoints: topPlayer[0]._sum.points || 0,
+      weekKey: currentWeekKey,
+    };
+  }
+
+  /**
+   * Ranking de un club (top N jugadores).
+   */
+  async getClubRanking(clubId: string, limit = 10) {
+    const currentWeekKey = getWeekKey();
+
+    const pointsGroups = await this.prisma.pointsEvent.groupBy({
+      by: ['playerId'],
+      where: {
+        clubId,
+        weekKey: currentWeekKey,
+      },
+      _sum: { points: true },
+      orderBy: { _sum: { points: 'desc' } },
+      take: limit,
+    });
+
+    if (pointsGroups.length === 0) return [];
+
+    const playerIds = pointsGroups.map((g) => g.playerId);
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: playerIds } },
+      select: {
+        id: true,
+        name: true,
+        photo: true,
+        rating: true,
+      },
+    });
+
+    const usersMap = new Map(users.map((u) => [u.id, u]));
+
+    return pointsGroups
+      .filter((g) => usersMap.has(g.playerId))
+      .map((g, index) => {
+        const user = usersMap.get(g.playerId)!;
+        return {
+          position: index + 1,
+          userId: user.id,
+          name: user.name,
+          photo: user.photo,
+          rating: user.rating,
+          levelCategory: getLevelCategory(user.rating),
+          points: g._sum.points || 0,
+        };
+      });
+  }
+
   private isSnapshotRecent(generatedAt: Date, type: 'weekly' | 'monthly' = 'weekly'): boolean {
     const now = new Date();
     const diff = now.getTime() - generatedAt.getTime();

@@ -13,6 +13,8 @@ import { FriendsModule } from './friends/friends.module';
 import { MasterModule } from './master/master.module';
 import { ReportsModule } from './reports/reports.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 import { HealthController } from './health/health.controller';
 
 @Module({
@@ -27,6 +29,8 @@ import { HealthController } from './health/health.controller';
       global: true,
     }),
     PrismaModule,
+    NotificationsModule,
+    SchedulerModule,
     AuthModule,
     UsersModule,
     ClubsModule,
