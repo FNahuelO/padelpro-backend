@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { UsersService } from '../users/users.service';
 import { RegisterDto, LoginDto } from './dto';
+import { getLevelCategory } from '../common/utils';
 
 @Injectable()
 export class AuthService {
@@ -28,6 +29,8 @@ export class AuthService {
         name: user.name,
         photo: user.photo,
         rating: user.rating,
+        levelCategory: getLevelCategory(user.rating),
+        mainClubId: user.mainClubId,
         location: user.location,
         sports: user.sports,
         preferredHand: user.preferredHand,
@@ -59,6 +62,8 @@ export class AuthService {
         name: user.name,
         photo: user.photo,
         rating: user.rating,
+        levelCategory: getLevelCategory(user.rating),
+        mainClubId: user.mainClubId,
         location: user.location,
         sports: user.sports,
         preferredHand: user.preferredHand,
@@ -81,6 +86,9 @@ export class AuthService {
       name: user.name,
       photo: user.photo,
       rating: user.rating,
+      levelCategory: user.levelCategory,
+      mainClubId: user.mainClubId,
+      mainClub: user.mainClub,
       location: user.location,
       weeklyPoints: user.weeklyPoints,
       monthlyPoints: user.monthlyPoints,

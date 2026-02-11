@@ -28,8 +28,11 @@ export class MatchmakingController {
   }
 
   @Post('run/:id')
-  async runMatchmaking(@Param('id') id: string) {
-    return this.matchmakingService.runMatchmaking(id);
+  async runMatchmaking(
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+  ) {
+    return this.matchmakingService.runMatchmaking(id, user.sub);
   }
 
   @Get('me')

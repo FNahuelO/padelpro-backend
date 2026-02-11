@@ -1,4 +1,4 @@
-import { IsArray, ValidateNested, IsInt, Min, Max, IsOptional, Validate, ValidatorConstraint, ValidatorConstraintInterface, ValidationArguments } from 'class-validator';
+import { IsArray, ValidateNested, IsInt, Min, Max, IsOptional, IsString, Validate, ValidatorConstraint, ValidatorConstraintInterface, ValidationArguments } from 'class-validator';
 import { Type } from 'class-transformer';
 
 @ValidatorConstraint({ name: 'isStartBeforeEnd', async: false })
@@ -29,6 +29,10 @@ export class AvailabilitySlotDto {
   @Max(22)
   @Validate(IsStartBeforeEndConstraint)
   endHour: number;
+
+  @IsOptional()
+  @IsString()
+  clubId?: string;
 }
 
 export class SetAvailabilityDto {

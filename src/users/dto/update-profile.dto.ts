@@ -37,6 +37,10 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   location?: string;
+
+  @IsOptional()
+  @IsString()
+  mainClubId?: string;
 }
 
 export class UpdatePreferencesDto {

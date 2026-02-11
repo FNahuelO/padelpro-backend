@@ -11,6 +11,7 @@ export class AvailabilityService {
       dayOfWeek: number;
       startHour: number;
       endHour: number;
+      clubId?: string;
     }>,
   ) {
     // Validar que no haya solapamientos entre los slots enviados
@@ -36,6 +37,7 @@ export class AvailabilityService {
       return tx.availability.findMany({
         where: { userId },
         orderBy: [{ dayOfWeek: 'asc' }, { startHour: 'asc' }],
+        include: { club: { select: { id: true, name: true } } },
       });
     });
 
@@ -46,6 +48,7 @@ export class AvailabilityService {
     return this.prisma.availability.findMany({
       where: { userId },
       orderBy: [{ dayOfWeek: 'asc' }, { startHour: 'asc' }],
+      include: { club: { select: { id: true, name: true } } },
     });
   }
 
@@ -113,7 +116,7 @@ export class AvailabilityService {
 
   async addSlot(
     userId: string,
-    slot: { dayOfWeek: number; startHour: number; endHour: number },
+    slot: { dayOfWeek: number; startHour: number; endHour: number; clubId?: string },
   ) {
     if (slot.startHour >= slot.endHour) {
       throw new BadRequestException(
@@ -146,6 +149,7 @@ export class AvailabilityService {
     date: Date;
     startHour: number;
     endHour: number;
+    clubId?: string;
     minRating?: number;
     maxRating?: number;
     excludeUserIds?: string[];
@@ -161,6 +165,7 @@ export class AvailabilityService {
                 dayOfWeek,
                 startHour: { lte: params.startHour },
                 endHour: { gte: params.endHour },
+                ...(params.clubId ? { clubId: params.clubId } : {}),
               },
             },
           },

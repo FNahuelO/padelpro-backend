@@ -34,6 +34,22 @@ export class MatchesController {
     return this.matchesService.confirmMatch(id, user.sub);
   }
 
+  @Post(':id/accept')
+  async acceptMatch(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.matchesService.acceptMatch(id, user.sub);
+  }
+
+  @Post(':id/decline')
+  async declineMatch(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.matchesService.declineMatch(id, user.sub);
+  }
+
   @Post(':id/result')
   async submitResult(
     @Param('id') id: string,

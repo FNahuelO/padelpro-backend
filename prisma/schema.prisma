@@ -23,6 +23,7 @@ model User {
   description   String?
   location      String?
   rating        Int       @default(1000)
+  mainClubId    String?   // Club principal del jugador
   weeklyPoints  Int       @default(0)
   monthlyPoints Int       @default(0)
   seasonPoints  Int       @default(0)
@@ -37,9 +38,11 @@ model User {
   preferredPlayTime String?   // "Mañana" | "Tarde" | "Noche"
 
   // Relations
+  mainClub            Club?    @relation("MainClubUsers", fields: [mainClubId], references: [id])
   availabilities      Availability[]
   matchRequests       MatchRequest[]
   matchParticipants   MatchParticipant[]
+  pointsEvents        PointsEvent[]
   sentFriendRequests  FriendRequest[] @relation("SentRequests")
   receivedFriendRequests FriendRequest[] @relation("ReceivedRequests")
   sentDirectMessages  DirectMessage[] @relation("Sender")
@@ -59,15 +62,21 @@ model Club {
   name        String
   address     String
   description String?
+  zone        String?   // Zona geográfica (opcional)
+  isActive    Boolean  @default(true)
   plan        ClubPlan @default(BASIC)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   // Relations
-  courts       Court[]
-  matches      Match[]
-  promotions   ClubPromotion[]
-  weeklyPoints WeeklyPoints[]
+  mainClubUsers  User[]   @relation("MainClubUsers")
+  courts         Court[]
+  matches        Match[]
+  availabilities Availability[]
+  promotions     ClubPromotion[]
+  weeklyPoints   WeeklyPoints[]
+  pointsEvents   PointsEvent[]
+  prizes         Prize[]
 
   @@map("clubs")
 }
@@ -93,6 +102,7 @@ model Court {
 model Availability {
   id        String   @id @default(uuid())
   userId    String
+  clubId    String?  // Club asociado a esta disponibilidad
   dayOfWeek Int      // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
   startHour Int      // 0-23
   endHour   Int      // 0-23
@@ -100,6 +110,7 @@ model Availability {
   updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  club Club? @relation(fields: [clubId], references: [id])
 
   @@unique([userId, dayOfWeek, startHour, endHour])
   @@map("availabilities")
@@ -146,11 +157,13 @@ model Match {
   participants     MatchParticipant[]
   result            MatchResult?
   chatMessages      ChatMessage[]
+  pointsEvents      PointsEvent[]
 
   @@map("matches")
 }
 
 enum MatchStatus {
+  PROPOSED
   PENDING
   CONFIRMED
   CANCELED
@@ -158,19 +171,26 @@ enum MatchStatus {
 }
 
 model MatchParticipant {
-  id          String    @id @default(uuid())
+  id          String            @id @default(uuid())
   matchId     String
   userId      String
-  team        Team      // A or B
-  isCaptain   Boolean   @default(false)
+  team        Team              // A or B
+  isCaptain   Boolean           @default(false)
+  status      ParticipantStatus @default(INVITED)
   confirmedAt DateTime?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime          @default(now())
 
   match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id])
 
   @@unique([matchId, userId])
   @@map("match_participants")
+}
+
+enum ParticipantStatus {
+  INVITED
+  ACCEPTED
+  DECLINED
 }
 
 enum Team {
@@ -192,13 +212,14 @@ model MatchResult {
 }
 
 model WeeklyPoints {
-  id          String   @id @default(uuid())
-  userId      String
-  clubId      String?
+  id            String   @id @default(uuid())
+  userId        String
+  clubId        String?
   weekStartDate DateTime
-  points      Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  weekKey       String?  // "YYYY-WNN" formato ISO week
+  points        Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   club Club? @relation(fields: [clubId], references: [id])
@@ -207,14 +228,42 @@ model WeeklyPoints {
   @@map("weekly_points")
 }
 
+// MVP: Registro de puntos por evento
+model PointsEvent {
+  id        String          @id @default(uuid())
+  playerId  String
+  clubId    String?
+  matchId   String?
+  type      PointsEventType
+  points    Int
+  weekKey   String          // "YYYY-WNN" formato ISO week
+  createdAt DateTime        @default(now())
+
+  player User  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  club   Club? @relation(fields: [clubId], references: [id])
+  match  Match? @relation(fields: [matchId], references: [id])
+
+  @@index([playerId, weekKey])
+  @@index([clubId, weekKey])
+  @@map("points_events")
+}
+
+enum PointsEventType {
+  PLAYED_MATCH
+  VALLEY_BONUS
+  CLUB_BONUS
+}
+
 model RankingSnapshot {
   id          String            @id @default(uuid())
   type        RankingType
   clubId      String?
   category    String?
+  weekKey     String?           // "YYYY-WNN" formato ISO week
   generatedAt DateTime          @default(now())
   entries     Json              // Array of {userId, name, rating, points, position}
 
+  @@index([type, clubId, category, weekKey])
   @@map("ranking_snapshots")
 }
 
@@ -235,6 +284,24 @@ model ChatMessage {
   user  User  @relation(fields: [userId], references: [id])
 
   @@map("chat_messages")
+}
+
+// MVP: Premios (gestionados manualmente)
+model Prize {
+  id          String   @id @default(uuid())
+  clubId      String
+  title       String   // e.g., "1 hora gratis", "Pack de pelotas"
+  description String?
+  weekKey     String?  // null = premio general; con weekKey = premio semanal
+  category    String?  // Categoría del premio (según level)
+  position    Int?     // Posición requerida (1 = primero, 2 = segundo...)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@map("prizes")
 }
 
 // FASE 2: Friends

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateProfileDto, UpdatePreferencesDto } from './dto/update-profile.dto';
+import { getLevelCategory } from '../common/utils';
 
 @Injectable()
 export class UsersService {
@@ -37,6 +38,7 @@ export class UsersService {
         description: true,
         location: true,
         rating: true,
+        mainClubId: true,
         weeklyPoints: true,
         monthlyPoints: true,
         seasonPoints: true,
@@ -46,6 +48,13 @@ export class UsersService {
         matchType: true,
         preferredPlayTime: true,
         createdAt: true,
+        mainClub: {
+          select: {
+            id: true,
+            name: true,
+            zone: true,
+          },
+        },
       },
     });
 
@@ -53,7 +62,10 @@ export class UsersService {
       throw new NotFoundException('Usuario no encontrado');
     }
 
-    return user;
+    return {
+      ...user,
+      levelCategory: getLevelCategory(user.rating),
+    };
   }
 
   async getProfile(userId: string) {
@@ -70,6 +82,7 @@ export class UsersService {
         description: true,
         location: true,
         rating: true,
+        mainClubId: true,
         weeklyPoints: true,
         monthlyPoints: true,
         seasonPoints: true,
@@ -79,12 +92,21 @@ export class UsersService {
         matchType: true,
         preferredPlayTime: true,
         createdAt: true,
+        mainClub: {
+          select: {
+            id: true,
+            name: true,
+            zone: true,
+          },
+        },
       },
     });
 
     if (!user) {
       throw new NotFoundException('Usuario no encontrado');
     }
+
+    const levelCategory = getLevelCategory(user.rating);
 
     // Contar partidos del usuario
     const matchesCount = await this.prisma.matchParticipant.count({
@@ -120,30 +142,36 @@ export class UsersService {
       }
     }
 
-    // Contar seguidores (amistades aceptadas donde el usuario es target)
-    const followersCount = await this.prisma.friendRequest.count({
-      where: {
-        toUserId: userId,
-        status: 'ACCEPTED',
-      },
-    });
+    // Posición en ranking semanal de su club principal
+    let weeklyRankPosition: number | null = null;
+    if (user.mainClubId) {
+      const { getWeekKey } = await import('../common/utils');
+      const currentWeekKey = getWeekKey();
 
-    // Contar seguidos (amistades aceptadas donde el usuario es el que envió)
-    const followingCount = await this.prisma.friendRequest.count({
-      where: {
-        fromUserId: userId,
-        status: 'ACCEPTED',
-      },
-    });
+      const clubPoints = await this.prisma.pointsEvent.groupBy({
+        by: ['playerId'],
+        where: {
+          clubId: user.mainClubId,
+          weekKey: currentWeekKey,
+        },
+        _sum: { points: true },
+        orderBy: { _sum: { points: 'desc' } },
+      });
+
+      const playerIndex = clubPoints.findIndex((p) => p.playerId === userId);
+      if (playerIndex >= 0) {
+        weeklyRankPosition = playerIndex + 1;
+      }
+    }
 
     return {
       ...user,
+      levelCategory,
+      weeklyRankPosition,
       stats: {
         matches: matchesCount,
         wins,
         losses,
-        followers: followersCount,
-        following: followingCount,
       },
       preferences: {
         preferredHand: user.preferredHand,
@@ -254,7 +282,7 @@ export class UsersService {
       throw new NotFoundException('Usuario no encontrado');
     }
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: userId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
@@ -264,6 +292,7 @@ export class UsersService {
         ...(dto.birthDate !== undefined && { birthDate: new Date(dto.birthDate) }),
         ...(dto.description !== undefined && { description: dto.description }),
         ...(dto.location !== undefined && { location: dto.location }),
+        ...(dto.mainClubId !== undefined && { mainClubId: dto.mainClubId || null }),
       },
       select: {
         id: true,
@@ -276,13 +305,22 @@ export class UsersService {
         description: true,
         location: true,
         rating: true,
+        mainClubId: true,
         sports: true,
         preferredHand: true,
         courtPosition: true,
         matchType: true,
         preferredPlayTime: true,
+        mainClub: {
+          select: { id: true, name: true, zone: true },
+        },
       },
     });
+
+    return {
+      ...updated,
+      levelCategory: getLevelCategory(updated.rating),
+    };
   }
 
   async updatePreferences(userId: string, dto: UpdatePreferencesDto) {

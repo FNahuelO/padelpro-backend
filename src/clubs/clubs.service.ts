@@ -7,9 +7,13 @@ export class ClubsService {
 
   async findAll() {
     return this.prisma.club.findMany({
+      where: { isActive: true },
       include: {
         promotions: {
           where: { active: true },
+        },
+        prizes: {
+          where: { isActive: true },
         },
         _count: {
           select: { courts: true },
@@ -26,6 +30,10 @@ export class ClubsService {
         courts: true,
         promotions: {
           where: { active: true },
+        },
+        prizes: {
+          where: { isActive: true },
+          orderBy: { position: 'asc' },
         },
       },
     });

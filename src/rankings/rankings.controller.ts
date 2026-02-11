@@ -9,8 +9,9 @@ export class RankingsController {
   async getWeeklyRanking(
     @Query('clubId') clubId?: string,
     @Query('category') category?: string,
+    @Query('weekKey') weekKey?: string,
   ) {
-    return this.rankingsService.getWeeklyRanking(clubId, category);
+    return this.rankingsService.getWeeklyRanking(clubId, category, weekKey);
   }
 
   @Get('monthly')
@@ -20,10 +21,4 @@ export class RankingsController {
   ) {
     return this.rankingsService.getMonthlyRanking(clubId, category);
   }
-
-  @Get('season')
-  async getSeasonRanking(@Query('seasonId') seasonId?: string) {
-    return this.rankingsService.getSeasonRanking(seasonId);
-  }
 }
-

@@ -63,7 +63,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
 
       if (!match || match.participants.length === 0) {
-        client.emit('error', { message: 'No tienes acceso a este chat' });
+        client.emit('error', { message: 'No tenés acceso a este chat' });
+        return;
+      }
+
+      // Solo permitir chat en partidos confirmados o completados
+      if (!['CONFIRMED', 'COMPLETED'].includes(match.status)) {
+        client.emit('error', { message: 'El chat solo está disponible para partidos confirmados' });
         return;
       }
 

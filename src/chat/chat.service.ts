@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -6,7 +6,7 @@ export class ChatService {
   constructor(private prisma: PrismaService) {}
 
   async getMatchMessages(matchId: string, userId: string) {
-    // Verificar que el usuario es participante del match
+    // Verificar que el usuario es participante y el match está CONFIRMED o COMPLETED
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
       include: {
@@ -17,7 +17,11 @@ export class ChatService {
     });
 
     if (!match || match.participants.length === 0) {
-      throw new ForbiddenException('No tienes acceso a este chat');
+      throw new ForbiddenException('No tenés acceso a este chat');
+    }
+
+    if (!['CONFIRMED', 'COMPLETED'].includes(match.status)) {
+      throw new BadRequestException('El chat solo está disponible para partidos confirmados');
     }
 
     return this.prisma.chatMessage.findMany({
@@ -36,7 +40,7 @@ export class ChatService {
   }
 
   async createMessage(matchId: string, userId: string, content: string) {
-    // Verificar que el usuario es participante del match
+    // Verificar que el usuario es participante y el match está CONFIRMED o COMPLETED
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
       include: {
@@ -47,7 +51,11 @@ export class ChatService {
     });
 
     if (!match || match.participants.length === 0) {
-      throw new ForbiddenException('No tienes acceso a este chat');
+      throw new ForbiddenException('No tenés acceso a este chat');
+    }
+
+    if (!['CONFIRMED', 'COMPLETED'].includes(match.status)) {
+      throw new BadRequestException('El chat solo está disponible para partidos confirmados');
     }
 
     return this.prisma.chatMessage.create({
@@ -67,5 +75,16 @@ export class ChatService {
       },
     });
   }
-}
 
+  /**
+   * Verificar si un match tiene chat habilitado (solo CONFIRMED/COMPLETED).
+   */
+  async isChatEnabled(matchId: string): Promise<boolean> {
+    const match = await this.prisma.match.findUnique({
+      where: { id: matchId },
+      select: { status: true },
+    });
+
+    return match ? ['CONFIRMED', 'COMPLETED'].includes(match.status) : false;
+  }
+}

@@ -1,29 +1,52 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { getWeekKey, getLevelCategory, getCategoryRatingRange } from '../common/utils';
 
 @Injectable()
 export class RankingsService {
   constructor(private prisma: PrismaService) {}
 
-  async getWeeklyRanking(clubId?: string, category?: string) {
-    // Buscar snapshot más reciente
+  /**
+   * Ranking semanal por club y categoría.
+   * Usa PointsEvent como fuente de verdad, filtrado por weekKey.
+   */
+  async getWeeklyRanking(clubId?: string, category?: string, weekKey?: string) {
+    const currentWeekKey = weekKey || getWeekKey();
+
+    // Buscar snapshot reciente
     const snapshot = await this.prisma.rankingSnapshot.findFirst({
       where: {
         type: 'WEEKLY',
         clubId: clubId || null,
         category: category || null,
+        weekKey: currentWeekKey,
       },
       orderBy: { generatedAt: 'desc' },
     });
 
     if (snapshot && this.isSnapshotRecent(snapshot.generatedAt)) {
-      return snapshot.entries as any[];
+      return {
+        weekKey: currentWeekKey,
+        clubId: clubId || null,
+        category: category || null,
+        entries: snapshot.entries as any[],
+      };
     }
 
     // Generar nuevo ranking
-    return this.generateWeeklyRanking(clubId, category);
+    const entries = await this.generateWeeklyRanking(clubId, category, currentWeekKey);
+
+    return {
+      weekKey: currentWeekKey,
+      clubId: clubId || null,
+      category: category || null,
+      entries,
+    };
   }
 
+  /**
+   * Ranking mensual (simplificado para MVP).
+   */
   async getMonthlyRanking(clubId?: string, category?: string) {
     const snapshot = await this.prisma.rankingSnapshot.findFirst({
       where: {
@@ -35,54 +58,82 @@ export class RankingsService {
     });
 
     if (snapshot && this.isSnapshotRecent(snapshot.generatedAt, 'monthly')) {
-      return snapshot.entries as any[];
+      return {
+        clubId: clubId || null,
+        category: category || null,
+        entries: snapshot.entries as any[],
+      };
     }
 
-    return this.generateMonthlyRanking(clubId, category);
+    const entries = await this.generateMonthlyRanking(clubId, category);
+    return {
+      clubId: clubId || null,
+      category: category || null,
+      entries,
+    };
   }
 
-  async getSeasonRanking(seasonId?: string) {
-    // Implementación simplificada para Fase 2
-    return this.generateSeasonRanking();
-  }
+  /**
+   * Generar ranking semanal usando PointsEvent.
+   * Agrupado por playerId, sumando points donde weekKey y clubId coinciden.
+   * Filtra por categoría usando el rango de rating del jugador.
+   */
+  private async generateWeeklyRanking(clubId?: string, category?: string, weekKey?: string) {
+    const currentWeekKey = weekKey || getWeekKey();
 
-  private async generateWeeklyRanking(clubId?: string, category?: string) {
-    const weekStart = this.getWeekStart(new Date());
+    // Filtro de rating por categoría
+    let ratingFilter: { gte?: number; lte?: number } | undefined;
+    if (category) {
+      const range = getCategoryRatingRange(category);
+      ratingFilter = { gte: range.min, lte: range.max };
+    }
 
-    const users = await this.prisma.user.findMany({
+    // Obtener puntos agrupados por jugador
+    const pointsGroups = await this.prisma.pointsEvent.groupBy({
+      by: ['playerId'],
       where: {
-        weeklyPointsRecords: clubId
-          ? {
-              some: {
-                clubId,
-                weekStartDate: weekStart,
-              },
-            }
-          : {
-              some: {
-                weekStartDate: weekStart,
-              },
-            },
+        weekKey: currentWeekKey,
+        ...(clubId ? { clubId } : {}),
       },
-      include: {
-        weeklyPointsRecords: {
-          where: {
-            weekStartDate: weekStart,
-            ...(clubId ? { clubId } : {}),
-          },
-        },
-      },
-      orderBy: { rating: 'desc' },
+      _sum: { points: true },
+      orderBy: { _sum: { points: 'desc' } },
     });
 
-    const entries = users.map((user, index) => ({
-      userId: user.id,
-      name: user.name,
-      photo: user.photo,
-      rating: user.rating,
-      points: user.weeklyPointsRecords[0]?.points || 0,
-      position: index + 1,
-    }));
+    if (pointsGroups.length === 0) {
+      return [];
+    }
+
+    // Obtener datos de los jugadores
+    const playerIds = pointsGroups.map((g) => g.playerId);
+    const users = await this.prisma.user.findMany({
+      where: {
+        id: { in: playerIds },
+        ...(ratingFilter ? { rating: ratingFilter } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        photo: true,
+        rating: true,
+      },
+    });
+
+    const usersMap = new Map(users.map((u) => [u.id, u]));
+
+    const entries = pointsGroups
+      .filter((g) => usersMap.has(g.playerId))
+      .map((g, index) => {
+        const user = usersMap.get(g.playerId)!;
+        return {
+          userId: user.id,
+          name: user.name,
+          photo: user.photo,
+          rating: user.rating,
+          levelCategory: getLevelCategory(user.rating),
+          points: g._sum.points || 0,
+          position: index + 1,
+        };
+      });
 
     // Guardar snapshot
     await this.prisma.rankingSnapshot.create({
@@ -90,6 +141,7 @@ export class RankingsService {
         type: 'WEEKLY',
         clubId: clubId || null,
         category: category || null,
+        weekKey: currentWeekKey,
         entries,
       },
     });
@@ -97,12 +149,22 @@ export class RankingsService {
     return entries;
   }
 
+  /**
+   * Ranking mensual simplificado.
+   */
   private async generateMonthlyRanking(clubId?: string, category?: string) {
-    const monthStart = this.getMonthStart(new Date());
+    let ratingFilter: { gte?: number; lte?: number } | undefined;
+    if (category) {
+      const range = getCategoryRatingRange(category);
+      ratingFilter = { gte: range.min, lte: range.max };
+    }
 
     const users = await this.prisma.user.findMany({
-      where: {},
+      where: {
+        ...(ratingFilter ? { rating: ratingFilter } : {}),
+      },
       orderBy: { monthlyPoints: 'desc' },
+      take: 100,
     });
 
     const entries = users.map((user, index) => ({
@@ -110,6 +172,7 @@ export class RankingsService {
       name: user.name,
       photo: user.photo,
       rating: user.rating,
+      levelCategory: getLevelCategory(user.rating),
       points: user.monthlyPoints,
       position: index + 1,
     }));
@@ -126,44 +189,14 @@ export class RankingsService {
     return entries;
   }
 
-  private async generateSeasonRanking() {
-    const users = await this.prisma.user.findMany({
-      orderBy: { seasonPoints: 'desc' },
-      take: 50,
-    });
-
-    return users.map((user, index) => ({
-      userId: user.id,
-      name: user.name,
-      photo: user.photo,
-      rating: user.rating,
-      points: user.seasonPoints,
-      position: index + 1,
-    }));
-  }
-
-  private getWeekStart(date: Date): Date {
-    const d = new Date(date);
-    const day = d.getDay();
-    const diff = d.getDate() - day;
-    const weekStart = new Date(d.setDate(diff));
-    weekStart.setHours(0, 0, 0, 0);
-    return weekStart;
-  }
-
-  private getMonthStart(date: Date): Date {
-    return new Date(date.getFullYear(), date.getMonth(), 1);
-  }
-
   private isSnapshotRecent(generatedAt: Date, type: 'weekly' | 'monthly' = 'weekly'): boolean {
     const now = new Date();
     const diff = now.getTime() - generatedAt.getTime();
     const hours = diff / (1000 * 60 * 60);
 
     if (type === 'weekly') {
-      return hours < 24; // Actualizar diariamente
+      return hours < 1; // Cache de 1 hora para semanal
     }
-    return hours < 24 * 7; // Actualizar semanalmente para mensual
+    return hours < 24; // Cache de 24 horas para mensual
   }
 }
-
