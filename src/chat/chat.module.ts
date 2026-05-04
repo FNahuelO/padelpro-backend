@@ -1,17 +1,12 @@
 import { Module } from '@nestjs/common';
-import { ChatGateway } from './chat.gateway';
 import { ChatService } from './chat.service';
 import { ChatController } from './chat.controller';
-import { JwtModule } from '@nestjs/jwt';
+import { RealtimeModule } from '../realtime/realtime.module';
 
 @Module({
-  imports: [
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'default-secret',
-    }),
-  ],
+  imports: [RealtimeModule],
   controllers: [ChatController],
-  providers: [ChatGateway, ChatService],
+  providers: [ChatService],
   exports: [ChatService],
 })
 export class ChatModule {}

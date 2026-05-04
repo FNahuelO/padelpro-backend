@@ -1,4 +1,4 @@
-import { IsEmail, IsString, MinLength, IsOptional } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class RegisterDto {
   @IsEmail()
@@ -15,5 +15,9 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   photo?: string;
+
+  @IsOptional()
+  @IsIn(['PLAYER', 'CLUB_ADMIN'])
+  role?: 'PLAYER' | 'CLUB_ADMIN';
 }
 

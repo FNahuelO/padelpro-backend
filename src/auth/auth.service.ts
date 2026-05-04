@@ -1,53 +1,56 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
-import { UsersService } from '../users/users.service';
+import { createHash } from 'crypto';
 import { RegisterDto, LoginDto } from './dto';
-import { getLevelCategory } from '../common/utils';
+import { AuthRepository } from './auth.repository';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
-    private usersService: UsersService,
+    private readonly authRepository: AuthRepository,
     private jwtService: JwtService,
   ) {}
 
   async register(dto: RegisterDto) {
     const hashedPassword = await bcrypt.hash(dto.password, 10);
-    const user = await this.usersService.create({
-      ...dto,
-      password: hashedPassword,
+    const existingUser = await this.authRepository.findByEmail(dto.email);
+    if (existingUser) {
+      throw new ConflictException('El email ya está registrado');
+    }
+
+    const user = await this.authRepository.createUser({
+      email: dto.email,
+      passwordHash: hashedPassword,
+      name: dto.name,
+      role: dto.role || 'PLAYER',
     });
+    if (user.role === 'PLAYER') {
+      await this.authRepository.createPlayerForUser(user.id);
+    }
 
     const token = this.generateToken(user.id, user.email);
 
     return {
       access_token: token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        photo: user.photo,
-        rating: user.rating,
-        levelCategory: getLevelCategory(user.rating),
-        mainClubId: user.mainClubId,
-        location: user.location,
-        sports: user.sports,
-        preferredHand: user.preferredHand,
-        courtPosition: user.courtPosition,
-        matchType: user.matchType,
-        preferredPlayTime: user.preferredPlayTime,
-      },
+      user,
     };
   }
 
   async login(dto: LoginDto) {
-    const user = await this.usersService.findByEmail(dto.email);
+    const user = await this.authRepository.findByEmail(dto.email);
     if (!user) {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    const isPasswordValid = await bcrypt.compare(dto.password, user.password);
+    const isPasswordValid = await bcrypt.compare(dto.password, user.password_hash);
     if (!isPasswordValid) {
       throw new UnauthorizedException('Credenciales inválidas');
     }
@@ -60,62 +63,29 @@ export class AuthService {
         id: user.id,
         email: user.email,
         name: user.name,
-        photo: user.photo,
-        rating: user.rating,
-        levelCategory: getLevelCategory(user.rating),
-        mainClubId: user.mainClubId,
-        location: user.location,
-        sports: user.sports,
-        preferredHand: user.preferredHand,
-        courtPosition: user.courtPosition,
-        matchType: user.matchType,
-        preferredPlayTime: user.preferredPlayTime,
+        role: user.role,
       },
     };
   }
 
   async getMe(userId: string) {
-    const user = await this.usersService.findOne(userId);
+    const user = await this.authRepository.findMe(userId);
     if (!user) {
       throw new UnauthorizedException('Usuario no encontrado');
     }
 
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      photo: user.photo,
-      rating: user.rating,
-      levelCategory: user.levelCategory,
-      mainClubId: user.mainClubId,
-      mainClub: user.mainClub,
-      location: user.location,
-      weeklyPoints: user.weeklyPoints,
-      monthlyPoints: user.monthlyPoints,
-      seasonPoints: user.seasonPoints,
-      sports: user.sports,
-      preferredHand: user.preferredHand,
-      courtPosition: user.courtPosition,
-      matchType: user.matchType,
-      preferredPlayTime: user.preferredPlayTime,
-    };
-  }
-
-  async changePassword(userId: string, currentPassword: string, newPassword: string) {
-    const userData = await this.usersService.changePassword(userId, currentPassword, newPassword);
-
-    const isPasswordValid = await bcrypt.compare(currentPassword, userData.hash);
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Contraseña actual incorrecta');
-    }
-
-    const newHash = await bcrypt.hash(newPassword, 10);
-    await this.usersService.updatePasswordHash(userId, newHash);
-
-    return { message: 'Contraseña actualizada correctamente' };
+    return user;
   }
 
   private generateToken(userId: string, email: string): string {
-    return this.jwtService.sign({ sub: userId, email });
+    const token = this.jwtService.sign({ sub: userId, email });
+    this.logger.log(
+      `JWT emitido user=${userId} fp=${this.fingerprint(token)} exp=${process.env.JWT_EXPIRES_IN || '7d'}`,
+    );
+    return token;
+  }
+
+  private fingerprint(token: string): string {
+    return createHash('sha256').update(token).digest('hex').slice(0, 12);
   }
 }

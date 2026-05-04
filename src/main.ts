@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ExpressAdapter } from '@nestjs/platform-express';
@@ -34,10 +35,15 @@ export default async (req: any, res: any) => {
 
 // Modo servidor local
 if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-  createNestServer().then(() => {
-    const port = process.env.PORT || 3000;
-    server.listen(port, () => {
-      console.log(`🚀 API running on http://0.0.0.0:${port}`);
+  createNestServer()
+    .then(() => {
+      const port = process.env.PORT || 3000;
+      server.listen(Number(port), '0.0.0.0', () => {
+        console.log(`🚀 API running on http://0.0.0.0:${port}`);
+      });
+    })
+    .catch((err) => {
+      console.error('[api] Error al arrancar Nest:', err);
+      process.exit(1);
     });
-  });
 }

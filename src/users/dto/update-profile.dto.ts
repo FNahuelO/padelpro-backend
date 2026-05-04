@@ -1,11 +1,4 @@
-import {
-  IsOptional,
-  IsString,
-  IsArray,
-  IsIn,
-  IsDateString,
-  MaxLength,
-} from 'class-validator';
+import { IsDateString, IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -14,58 +7,25 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsString()
-  photo?: string;
+  phone?: string | null;
 
   @IsOptional()
   @IsString()
-  phone?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsIn(['Masculino', 'Femenino', 'Otro'])
-  gender?: string;
+  gender?: string | null;
 
   @IsOptional()
   @IsDateString()
-  birthDate?: string;
+  birthDate?: string | null;
 
   @IsOptional()
   @IsString()
-  @MaxLength(160)
-  description?: string;
+  description?: string | null;
 
   @IsOptional()
   @IsString()
-  location?: string;
+  location?: string | null;
 
   @IsOptional()
-  @IsString()
-  mainClubId?: string;
-}
-
-export class UpdatePreferencesDto {
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  sports?: string[];
-
-  @IsOptional()
-  @IsString()
-  @IsIn(['Derecha', 'Izquierda'])
-  preferredHand?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsIn(['Lado derecho', 'Lado izquierdo'])
-  courtPosition?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsIn(['Competitivo', 'Amistoso'])
-  matchType?: string;
-
-  @IsOptional()
-  @IsString()
-  @IsIn(['Mañana', 'Tarde', 'Noche'])
-  preferredPlayTime?: string;
+  @IsUUID()
+  mainClubId?: string | null;
 }

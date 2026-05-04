@@ -1,467 +1,380 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { UpdateProfileDto, UpdatePreferencesDto } from './dto/update-profile.dto';
-import { getLevelCategory } from '../common/utils';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { DatabaseService } from '../database/database.service';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdatePreferencesDto } from './dto/update-preferences.dto';
+import { v2 as cloudinary } from 'cloudinary';
+
+type Extras = Record<string, unknown>;
+
+type MatchRow = {
+  matchId: string;
+  date: Date;
+  score: string;
+  outcome: 'win' | 'loss' | 'draw';
+  opponentNames: string[];
+};
+
+function levelToRating(level: number | null | undefined): number {
+  const l = level != null ? Number(level) : 2.5;
+  return Math.round(1000 + (l - 2.5) * 80);
+}
+
+function parseScore(score: string): { a: number; b: number } | null {
+  const parts = score.split(/[-:]/).map((s) => parseInt(s.trim(), 10));
+  if (parts.length >= 2 && !Number.isNaN(parts[0]) && !Number.isNaN(parts[1])) {
+    return { a: parts[0], b: parts[1] };
+  }
+  return null;
+}
+
+function userTeamFromRank(rnk: number, neededPlayers: number): 'A' | 'B' {
+  const half = Math.ceil(Math.max(neededPlayers, 2) / 2);
+  return rnk <= half ? 'A' : 'B';
+}
+
+function tallyWL(rows: MatchRow[]) {
+  let wins = 0;
+  let losses = 0;
+  let draws = 0;
+  for (const m of rows) {
+    const pts = parseScore(m.score);
+    if (pts && pts.a === pts.b) draws += 1;
+    else if (m.outcome === 'win') wins += 1;
+    else if (m.outcome === 'loss') losses += 1;
+  }
+  return { wins, losses, draws };
+}
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
-
-  async create(data: {
-    email: string;
-    password: string;
-    name: string;
-    photo?: string;
-  }) {
-    return this.prisma.user.create({
-      data,
+  constructor(private readonly db: DatabaseService) {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET,
     });
   }
 
-  async findByEmail(email: string) {
-    return this.prisma.user.findUnique({
-      where: { email },
-    });
-  }
-
-  async findOne(id: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        photo: true,
-        phone: true,
-        gender: true,
-        birthDate: true,
-        description: true,
-        location: true,
-        rating: true,
-        mainClubId: true,
-        weeklyPoints: true,
-        monthlyPoints: true,
-        seasonPoints: true,
-        sports: true,
-        preferredHand: true,
-        courtPosition: true,
-        matchType: true,
-        preferredPlayTime: true,
-        createdAt: true,
-        mainClub: {
-          select: {
-            id: true,
-            name: true,
-            zone: true,
-          },
-        },
-      },
-    });
-
-    if (!user) {
-      throw new NotFoundException('Usuario no encontrado');
+  private parseExtras(row: { extras?: unknown } | undefined): Extras {
+    const raw = row?.extras;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Extras;
     }
-
-    return {
-      ...user,
-      levelCategory: getLevelCategory(user.rating),
-    };
+    return {};
   }
 
   async getProfile(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        photo: true,
-        phone: true,
-        gender: true,
-        birthDate: true,
-        description: true,
-        location: true,
-        rating: true,
-        mainClubId: true,
-        weeklyPoints: true,
-        monthlyPoints: true,
-        seasonPoints: true,
-        sports: true,
-        preferredHand: true,
-        courtPosition: true,
-        matchType: true,
-        preferredPlayTime: true,
-        createdAt: true,
-        mainClub: {
-          select: {
-            id: true,
-            name: true,
-            zone: true,
-          },
-        },
-      },
-    });
-
-    if (!user) {
+    const res = await this.db.query(
+      `SELECT u.id, u.name, u.email, u.role,
+              p.id AS player_id, p.photo_url, p.city, p.zone, p.level, p.position, p.bio, p.nickname,
+              p.extras
+       FROM users u
+       LEFT JOIN players p ON p.user_id = u.id
+       WHERE u.id = $1`,
+      [userId],
+    );
+    const row = res.rows[0];
+    if (!row) {
       throw new NotFoundException('Usuario no encontrado');
     }
 
-    const levelCategory = getLevelCategory(user.rating);
+    const extras = this.parseExtras(row);
+    const prefs = (extras.preferences as Extras) || {};
 
-    // Contar partidos del usuario
-    const matchesCount = await this.prisma.matchParticipant.count({
-      where: { userId },
-    });
+    const matchRows = await this.loadMatchRowsForUser(userId);
+    const wl = tallyWL(matchRows);
 
-    // Contar partidos ganados
-    const completedMatches = await this.prisma.match.findMany({
-      where: {
-        status: 'COMPLETED',
-        participants: { some: { userId } },
-        result: { isNot: null },
-      },
-      include: {
-        participants: {
-          where: { userId },
-          select: { team: true },
-        },
-        result: true,
-      },
-    });
-
-    let wins = 0;
-    let losses = 0;
-    for (const match of completedMatches) {
-      const userTeam = match.participants[0]?.team;
-      if (match.result && userTeam) {
-        const teamAWon = match.result.teamAScore > match.result.teamBScore;
-        const userWon =
-          (userTeam === 'A' && teamAWon) || (userTeam === 'B' && !teamAWon);
-        if (userWon) wins++;
-        else losses++;
+    const mainClubId = (extras.mainClubId as string) || undefined;
+    let mainClub: { id: string; name: string; zone?: string } | undefined;
+    if (mainClubId) {
+      const c = await this.db.query(
+        `SELECT id, name, zone FROM clubs WHERE id = $1`,
+        [mainClubId],
+      );
+      if (c.rows[0]) {
+        mainClub = {
+          id: c.rows[0].id,
+          name: c.rows[0].name,
+          zone: c.rows[0].zone ?? undefined,
+        };
       }
     }
 
-    // Posición en ranking semanal de su club principal
-    let weeklyRankPosition: number | null = null;
-    if (user.mainClubId) {
-      const { getWeekKey } = await import('../common/utils');
-      const currentWeekKey = getWeekKey();
-
-      const clubPoints = await this.prisma.pointsEvent.groupBy({
-        by: ['playerId'],
-        where: {
-          clubId: user.mainClubId,
-          weekKey: currentWeekKey,
-        },
-        _sum: { points: true },
-        orderBy: { _sum: { points: 'desc' } },
-      });
-
-      const playerIndex = clubPoints.findIndex((p) => p.playerId === userId);
-      if (playerIndex >= 0) {
-        weeklyRankPosition = playerIndex + 1;
-      }
-    }
+    const location =
+      (extras.location as string) ||
+      [row.zone, row.city].filter(Boolean).join(', ') ||
+      undefined;
 
     return {
-      ...user,
-      levelCategory,
-      weeklyRankPosition,
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      phone: (extras.phone as string) || '',
+      gender: (extras.gender as string) || '',
+      birthDate: (extras.birthDate as string) || undefined,
+      description: row.bio || '',
+      photo: row.photo_url ?? undefined,
+      location,
+      rating: levelToRating(row.level),
+      levelCategory: row.level != null ? String(row.level) : '2.5',
+      mainClubId,
+      mainClub,
+      weeklyRankPosition: null,
+      sports: ['Pádel'],
       stats: {
-        matches: matchesCount,
-        wins,
-        losses,
+        matches: matchRows.length,
+        wins: wl.wins,
+        losses: wl.losses,
       },
       preferences: {
-        preferredHand: user.preferredHand,
-        courtPosition: user.courtPosition,
-        matchType: user.matchType,
-        preferredPlayTime: user.preferredPlayTime,
+        preferredHand: (prefs.preferredHand as string) || mapPosition(row.position),
+        courtPosition: (prefs.courtPosition as string) || undefined,
+        matchType: (prefs.matchType as string) || undefined,
+        preferredPlayTime: (prefs.preferredPlayTime as string) || undefined,
       },
     };
   }
 
   async getMatchHistory(userId: string, limit?: number) {
-    const matches = await this.prisma.match.findMany({
-      where: {
-        status: 'COMPLETED',
-        participants: { some: { userId } },
-        result: { isNot: null },
-      },
-      include: {
-        participants: {
-          include: {
-            user: {
-              select: { id: true, name: true, rating: true },
-            },
-          },
-        },
-        result: true,
-        club: {
-          select: { id: true, name: true },
-        },
-      },
-      orderBy: { date: 'asc' },
-      ...(limit ? { take: limit } : {}),
-    });
+    const rows = await this.loadMatchRowsForUser(userId);
+    const ordered = [...rows].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
 
-    // Calcular evolución de rating basado en los partidos
-    // Empezamos con rating 1000 (default) y sumamos/restamos según resultados
-    const baseRating = 1000;
-    let cumulativeRating = baseRating;
-    const K = 24;
+    let slice = ordered;
+    if (limit && limit > 0) {
+      slice = ordered.slice(-limit);
+    }
 
-    const history = matches.map((match) => {
-      const userParticipant = match.participants.find(
-        (p) => p.userId === userId,
-      );
-      const userTeam = userParticipant?.team;
+    const levelRes = await this.db.query(`SELECT level FROM players WHERE user_id = $1`, [
+      userId,
+    ]);
+    const baseRating = levelToRating(levelRes.rows[0]?.level);
 
-      const teamA = match.participants.filter((p) => p.team === 'A');
-      const teamB = match.participants.filter((p) => p.team === 'B');
+    const sumDelta = slice.reduce((acc, m) => {
+      const pts = parseScore(m.score);
+      const draw = pts != null && pts.a === pts.b;
+      const ch = draw ? 0 : m.outcome === 'win' ? 12 : m.outcome === 'loss' ? -10 : 0;
+      return acc + ch;
+    }, 0);
 
-      const avgRatingA =
-        teamA.reduce((sum, p) => sum + p.user.rating, 0) /
-        (teamA.length || 1);
-      const avgRatingB =
-        teamB.reduce((sum, p) => sum + p.user.rating, 0) /
-        (teamB.length || 1);
-
-      const teamAWon =
-        match.result!.teamAScore > match.result!.teamBScore;
-      const userWon =
-        (userTeam === 'A' && teamAWon) || (userTeam === 'B' && !teamAWon);
-      const isDraw =
-        match.result!.teamAScore === match.result!.teamBScore;
-
-      // Calcular cambio Elo
-      const userAvgRating = userTeam === 'A' ? avgRatingA : avgRatingB;
-      const opponentAvgRating = userTeam === 'A' ? avgRatingB : avgRatingA;
-      const expected =
-        1 / (1 + Math.pow(10, (opponentAvgRating - userAvgRating) / 400));
-      const actual = userWon ? 1 : isDraw ? 0.5 : 0;
-      const ratingChange = Math.round(K * (actual - expected));
-
-      cumulativeRating += ratingChange;
-
+    let r = baseRating - sumDelta;
+    const historyOut = slice.map((m) => {
+      const pts = parseScore(m.score);
+      const draw = pts != null && pts.a === pts.b;
+      let result: 'win' | 'loss' | 'draw' = 'draw';
+      if (!draw) {
+        result = m.outcome === 'win' ? 'win' : 'loss';
+      }
+      const ratingChange = draw ? 0 : result === 'win' ? 12 : -10;
+      r += ratingChange;
       return {
-        matchId: match.id,
-        date: match.date,
-        result: userWon ? 'win' : isDraw ? 'draw' : 'loss',
-        score: `${match.result!.teamAScore}-${match.result!.teamBScore}`,
-        userTeam,
+        matchId: m.matchId,
+        date: new Date(m.date).toISOString(),
+        result,
+        score: m.score,
         ratingChange,
-        ratingAfter: cumulativeRating,
-        club: match.club,
-        opponent: match.participants
-          .filter((p) => p.team !== userTeam)
-          .map((p) => p.user.name),
+        ratingAfter: r,
+        opponent: m.opponentNames,
       };
     });
 
+    const wl = tallyWL(ordered);
+
     return {
-      currentRating:
-        history.length > 0
-          ? history[history.length - 1].ratingAfter
-          : baseRating,
-      totalMatches: history.length,
-      wins: history.filter((h) => h.result === 'win').length,
-      losses: history.filter((h) => h.result === 'loss').length,
-      draws: history.filter((h) => h.result === 'draw').length,
-      history,
+      currentRating: baseRating,
+      totalMatches: ordered.length,
+      wins: wl.wins,
+      losses: wl.losses,
+      draws: wl.draws,
+      history: historyOut,
     };
+  }
+
+  private async loadMatchRowsForUser(userId: string): Promise<MatchRow[]> {
+    const res = await this.db.query(
+      `WITH base AS (
+         SELECT m.id AS match_id, m.date, m.needed_players, mr.score, mr.winner_team
+         FROM matches m
+         INNER JOIN match_results mr ON mr.match_id = m.id
+         INNER JOIN match_players my_mp ON my_mp.match_id = m.id
+         INNER JOIN players my_p ON my_p.id = my_mp.player_id AND my_p.user_id = $1
+         WHERE m.status = 'FINISHED' AND my_mp.status IN ('JOINED','CONFIRMED')
+       ),
+       numbered AS (
+         SELECT b.match_id, b.date, b.needed_players, b.score, b.winner_team,
+                pl.user_id AS uid, u.name AS player_name,
+                ROW_NUMBER() OVER (PARTITION BY mp.match_id ORDER BY mp.created_at) AS rnk
+         FROM base b
+         INNER JOIN match_players mp ON mp.match_id = b.match_id
+           AND mp.status IN ('JOINED','CONFIRMED')
+         INNER JOIN players pl ON pl.id = mp.player_id
+         INNER JOIN users u ON u.id = pl.user_id
+       )
+       SELECT * FROM numbered
+       ORDER BY date ASC, match_id, rnk`,
+      [userId],
+    );
+
+    const byMatch = new Map<
+      string,
+      {
+        matchId: string;
+        date: Date;
+        score: string;
+        winnerTeam: string;
+        neededPlayers: number;
+        players: { userId: string; name: string; rnk: number }[];
+      }
+    >();
+
+    for (const row of res.rows) {
+      const id = row.match_id;
+      if (!byMatch.has(id)) {
+        byMatch.set(id, {
+          matchId: id,
+          date: row.date,
+          score: row.score,
+          winnerTeam: String(row.winner_team || '').toUpperCase(),
+          neededPlayers: Number(row.needed_players) || 4,
+          players: [],
+        });
+      }
+      byMatch.get(id)!.players.push({
+        userId: row.uid,
+        name: row.player_name,
+        rnk: Number(row.rnk),
+      });
+    }
+
+    const out: MatchRow[] = [];
+
+    for (const m of byMatch.values()) {
+      const me = m.players.find((p) => p.userId === userId);
+      if (!me) continue;
+      const myTeam = userTeamFromRank(me.rnk, m.neededPlayers);
+      const pts = parseScore(m.score);
+      const draw = pts != null && pts.a === pts.b;
+      let outcome: 'win' | 'loss' | 'draw' = 'draw';
+      if (!draw) {
+        const w = m.winnerTeam === 'A' || m.winnerTeam === 'B' ? m.winnerTeam : 'A';
+        outcome = myTeam === w ? 'win' : 'loss';
+      }
+      const opponentNames = m.players
+        .filter((p) => p.userId !== userId)
+        .map((p) => p.name);
+      out.push({
+        matchId: m.matchId,
+        date: m.date,
+        score: m.score,
+        outcome,
+        opponentNames,
+      });
+    }
+
+    return out;
   }
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('Usuario no encontrado');
+    if (dto.name) {
+      await this.db.query(`UPDATE users SET name = $2, updated_at = NOW() WHERE id = $1`, [
+        userId,
+        dto.name,
+      ]);
     }
 
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.photo !== undefined && { photo: dto.photo }),
-        ...(dto.phone !== undefined && { phone: dto.phone }),
-        ...(dto.gender !== undefined && { gender: dto.gender }),
-        ...(dto.birthDate !== undefined && { birthDate: new Date(dto.birthDate) }),
-        ...(dto.description !== undefined && { description: dto.description }),
-        ...(dto.location !== undefined && { location: dto.location }),
-        ...(dto.mainClubId !== undefined && { mainClubId: dto.mainClubId || null }),
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        photo: true,
-        phone: true,
-        gender: true,
-        birthDate: true,
-        description: true,
-        location: true,
-        rating: true,
-        mainClubId: true,
-        sports: true,
-        preferredHand: true,
-        courtPosition: true,
-        matchType: true,
-        preferredPlayTime: true,
-        mainClub: {
-          select: { id: true, name: true, zone: true },
-        },
-      },
-    });
+    const ures = await this.db.query(`SELECT id, bio, city, extras FROM players WHERE user_id = $1`, [
+      userId,
+    ]);
+    const prow = ures.rows[0];
+    if (!prow) {
+      return this.getProfile(userId);
+    }
 
-    return {
-      ...updated,
-      levelCategory: getLevelCategory(updated.rating),
-    };
+    const extras = this.parseExtras(prow);
+    if (dto.phone !== undefined) extras.phone = dto.phone;
+    if (dto.gender !== undefined) extras.gender = dto.gender;
+    if (dto.birthDate !== undefined) extras.birthDate = dto.birthDate;
+    if (dto.mainClubId !== undefined) extras.mainClubId = dto.mainClubId;
+    if (dto.location !== undefined) extras.location = dto.location;
+
+    const bio = dto.description !== undefined ? dto.description : prow.bio;
+    const city = dto.location !== undefined ? dto.location : prow.city;
+
+    await this.db.query(
+      `UPDATE players
+       SET bio = $2,
+           city = $3,
+           extras = $4::jsonb,
+           updated_at = NOW()
+       WHERE user_id = $1`,
+      [userId, bio, city, JSON.stringify(extras)],
+    );
+
+    return this.getProfile(userId);
   }
 
   async updatePreferences(userId: string, dto: UpdatePreferencesDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
-
-    if (!user) {
-      throw new NotFoundException('Usuario no encontrado');
+    const ures = await this.db.query(`SELECT id, extras FROM players WHERE user_id = $1`, [
+      userId,
+    ]);
+    const row = ures.rows[0];
+    if (!row) {
+      throw new NotFoundException('Perfil de jugador no encontrado');
     }
 
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        ...(dto.sports !== undefined && { sports: dto.sports }),
-        ...(dto.preferredHand !== undefined && {
-          preferredHand: dto.preferredHand,
-        }),
-        ...(dto.courtPosition !== undefined && {
-          courtPosition: dto.courtPosition,
-        }),
-        ...(dto.matchType !== undefined && { matchType: dto.matchType }),
-        ...(dto.preferredPlayTime !== undefined && {
-          preferredPlayTime: dto.preferredPlayTime,
-        }),
-      },
-      select: {
-        id: true,
-        sports: true,
-        preferredHand: true,
-        courtPosition: true,
-        matchType: true,
-        preferredPlayTime: true,
-      },
-    });
-  }
+    const extras = this.parseExtras(row);
+    const preferences: Extras = { ...(extras.preferences as Extras), ...dto };
+    extras.preferences = preferences;
 
-  async updateRating(userId: string, newRating: number) {
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: { rating: newRating },
-    });
-  }
-
-  async addWeeklyPoints(userId: string, points: number) {
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        weeklyPoints: { increment: points },
-        monthlyPoints: { increment: points },
-        seasonPoints: { increment: points },
-      },
-    });
-  }
-
-  /**
-   * Perfil público de un jugador (para ver desde otro usuario).
-   */
-  async getPublicProfile(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        name: true,
-        photo: true,
-        gender: true,
-        description: true,
-        location: true,
-        rating: true,
-        mainClubId: true,
-        weeklyPoints: true,
-        monthlyPoints: true,
-        sports: true,
-        preferredHand: true,
-        courtPosition: true,
-        matchType: true,
-        preferredPlayTime: true,
-        createdAt: true,
-        mainClub: {
-          select: { id: true, name: true, zone: true },
-        },
-      },
-    });
-
-    if (!user) {
-      throw new NotFoundException('Usuario no encontrado');
-    }
-
-    // Estadísticas
-    const matchesPlayed = await this.prisma.matchParticipant.count({
-      where: { userId, status: 'ACCEPTED' },
-    });
-
-    const completedMatches = await this.prisma.match.findMany({
-      where: {
-        status: 'COMPLETED',
-        participants: { some: { userId } },
-        result: { isNot: null },
-      },
-      include: {
-        participants: { where: { userId }, select: { team: true } },
-        result: true,
-      },
-    });
-
-    let wins = 0;
-    let losses = 0;
-    for (const match of completedMatches) {
-      const userTeam = match.participants[0]?.team;
-      if (match.result && userTeam) {
-        const teamAWon = match.result.teamAScore > match.result.teamBScore;
-        const userWon =
-          (userTeam === 'A' && teamAWon) || (userTeam === 'B' && !teamAWon);
-        if (userWon) wins++;
-        else losses++;
-      }
-    }
+    await this.db.query(`UPDATE players SET extras = $2::jsonb, updated_at = NOW() WHERE id = $1`, [
+      row.id,
+      JSON.stringify(extras),
+    ]);
 
     return {
-      ...user,
-      levelCategory: getLevelCategory(user.rating),
-      stats: { matches: matchesPlayed, wins, losses },
-      preferences: {
-        preferredHand: user.preferredHand,
-        courtPosition: user.courtPosition,
-        matchType: user.matchType,
-        preferredPlayTime: user.preferredPlayTime,
-      },
+      preferredHand: dto.preferredHand ?? (preferences.preferredHand as string) ?? null,
+      courtPosition: dto.courtPosition ?? (preferences.courtPosition as string) ?? null,
+      matchType: dto.matchType ?? (preferences.matchType as string) ?? null,
+      preferredPlayTime: dto.preferredPlayTime ?? (preferences.preferredPlayTime as string) ?? null,
     };
   }
 
-  async changePassword(userId: string, currentPassword: string, newPassword: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('Usuario no encontrado');
-    return { userId, currentPassword, newPassword, hash: user.password };
-  }
+  async uploadAvatar(userId: string, file: Express.Multer.File) {
+    if (!process.env.CLOUDINARY_CLOUD_NAME) {
+      throw new BadRequestException('Cloudinary no está configurado');
+    }
 
-  async updatePasswordHash(userId: string, newHash: string) {
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: { password: newHash },
+    const b64 = file.buffer.toString('base64');
+    const dataUri = `data:${file.mimetype};base64,${b64}`;
+
+    const upload = await cloudinary.uploader.upload(dataUri, {
+      folder: `playtomic-clone/avatars/${userId}`,
+      resource_type: 'image',
+      transformation: [{ width: 800, crop: 'limit' }, { quality: 'auto' }],
     });
+
+    await this.db.query(
+      `UPDATE players SET photo_url = $2, updated_at = NOW() WHERE user_id = $1`,
+      [userId, upload.secure_url],
+    );
+
+    return { photo: upload.secure_url };
   }
+}
+
+function mapPosition(
+  pos: string | null | undefined,
+): string | undefined {
+  if (!pos) return undefined;
+  const m: Record<string, string> = {
+    drive: 'Drive',
+    reves: 'Revés',
+    ambos: 'Ambos',
+  };
+  return m[pos] ?? pos;
 }
