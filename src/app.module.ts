@@ -10,6 +10,7 @@ import { DatabaseModule } from './database/database.module';
 import { PlayersModule } from './players/players.module';
 import { CommunityModule } from './community/community.module';
 import { TournamentsModule } from './tournaments/tournaments.module';
+import { CircuitsModule } from './circuits/circuits.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { ThirdTimeModule } from './third-time/third-time.module';
 import { ShopModule } from './shop/shop.module';
@@ -37,6 +38,7 @@ import { UsersModule } from './users/users.module';
     ChatModule,
     CommunityModule,
     TournamentsModule,
+    CircuitsModule,
     ThirdTimeModule,
     ShopModule,
     UsersModule,
