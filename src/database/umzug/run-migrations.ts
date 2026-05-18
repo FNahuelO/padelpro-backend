@@ -1,7 +1,8 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { Pool } from 'pg';
 import { Umzug } from 'umzug';
+import { detectDbSchemaMode } from '../schema-mode';
 import { PgStorage, ensureMigrationsTable } from './pg-storage';
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
@@ -50,12 +51,39 @@ function buildUmzug(pool: Pool) {
   });
 }
 
+async function baselinePrismaDatabase(pool: Pool): Promise<void> {
+  if ((await detectDbSchemaMode(pool)) !== 'prisma') {
+    return;
+  }
+
+  const sqlMigrations = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
+
+  for (const name of sqlMigrations) {
+    await pool.query(
+      `INSERT INTO umzug_migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
+      [name],
+    );
+  }
+
+  console.log(
+    `[migrate] Base Prisma detectada (_prisma_migrations). ` +
+      `${sqlMigrations.length} migraciones SQL Umzug marcadas como aplicadas sin ejecutarlas.`,
+  );
+}
+
 async function main() {
   const cmd = process.argv[2] ?? 'up';
   const pool = new Pool({ connectionString: databaseUrl() });
 
   try {
     await ensureMigrationsTable(pool);
+
+    if (cmd === 'up') {
+      await baselinePrismaDatabase(pool);
+    }
+
     const umzug = buildUmzug(pool);
 
     if (cmd === 'up') {

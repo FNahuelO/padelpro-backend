@@ -11,12 +11,16 @@ BEGIN
     WHERE table_schema = 'public'
       AND table_name = 'users'
       AND column_name = 'password'
+  ) AND EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'users'
+      AND column_name = 'password_hash'
   ) THEN
     UPDATE users
     SET password_hash = password
     WHERE password_hash IS NULL AND password IS NOT NULL;
-
-    ALTER TABLE users DROP COLUMN password;
   END IF;
 END $$;
 

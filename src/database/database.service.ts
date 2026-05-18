@@ -1,10 +1,12 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool, QueryResult } from 'pg';
+import { DbSchemaMode, detectDbSchemaMode } from './schema-mode';
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private pool: Pool;
+  private schemaMode: DbSchemaMode | null = null;
 
   constructor(private readonly configService: ConfigService) {
     const connectionString = this.configService.get<string>('DATABASE_URL');
@@ -44,5 +46,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
   query<T = any>(text: string, params: unknown[] = []): Promise<QueryResult<T>> {
     return this.pool.query<T>(text, params);
+  }
+
+  async getSchemaMode(): Promise<DbSchemaMode> {
+    if (this.schemaMode) {
+      return this.schemaMode;
+    }
+    this.schemaMode = await detectDbSchemaMode(this.pool);
+    return this.schemaMode;
   }
 }

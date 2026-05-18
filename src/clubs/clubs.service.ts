@@ -8,19 +8,43 @@ export class ClubsService {
   constructor(private readonly db: DatabaseService) {}
 
   async findAll() {
+    const mode = await this.db.getSchemaMode();
     const result = await this.db.query(
-      `SELECT id, name, city, zone, address, phone, logo_url, created_at
-       FROM clubs
-       ORDER BY name ASC`,
+      mode === 'prisma'
+        ? `SELECT id, name,
+                  NULL::text AS city,
+                  zone,
+                  address,
+                  NULL::text AS phone,
+                  NULL::text AS logo_url,
+                  "createdAt" AS created_at
+           FROM clubs
+           WHERE COALESCE("isActive", true) = true
+           ORDER BY name ASC`
+        : `SELECT id, name, city, zone, address, phone, logo_url, created_at
+           FROM clubs
+           ORDER BY name ASC`,
     );
     return result.rows;
   }
 
   async findOne(id: string) {
+    const mode = await this.db.getSchemaMode();
     const result = await this.db.query(
-      `SELECT id, name, city, zone, address, phone, logo_url, created_at, updated_at
-       FROM clubs
-       WHERE id = $1`,
+      mode === 'prisma'
+        ? `SELECT id, name,
+                  NULL::text AS city,
+                  zone,
+                  address,
+                  NULL::text AS phone,
+                  NULL::text AS logo_url,
+                  "createdAt" AS created_at,
+                  "updatedAt" AS updated_at
+           FROM clubs
+           WHERE id = $1`
+        : `SELECT id, name, city, zone, address, phone, logo_url, created_at, updated_at
+           FROM clubs
+           WHERE id = $1`,
       [id],
     );
     const club = result.rows[0];
