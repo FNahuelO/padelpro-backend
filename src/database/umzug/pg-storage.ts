@@ -3,7 +3,8 @@ import type { MigrationParams, UmzugStorage } from 'umzug';
 
 export type MigrateContext = { pool: Pool };
 
-const DEFAULT_TABLE = 'umzug_migrations';
+/** Historial de migraciones SQL del stack Sequelize (runner: Umzug). */
+const DEFAULT_TABLE = 'sequelize_migrations';
 
 export class PgStorage implements UmzugStorage<MigrateContext> {
   constructor(

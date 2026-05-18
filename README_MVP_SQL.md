@@ -6,15 +6,17 @@
 - `src/modules` no existía en el backend previo, por eso se mantuvo estructura actual por dominios (`auth`, `players`, `matches`, etc.) para no romper imports existentes.
 - Módulos listos para evolución: `tournaments`, `third-time`, `shop`, `community`, `realtime`.
 
-## Migración inicial
+## Migraciones (SQL + Sequelize, sin Prisma)
 
 ```bash
 cd apps/api
-pnpm db:migrate
+pnpm db:migrate    # aplica src/database/migrations/*.sql
+pnpm db:seed       # datos demo (opcional)
+# o en un paso:
+pnpm db:setup
 ```
 
-Archivo: `src/database/migrations/001_init_mvp.sql`
-Archivo: `src/database/migrations/002_tournament_photos.sql`
+Archivos: `001_init_mvp.sql` … `005_circuits.sql` (ver carpeta `migrations/`).
 
 ## Endpoints MVP implementados
 

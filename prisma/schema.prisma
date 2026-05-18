@@ -1,16 +1,11 @@
-// Prisma fue removido de este proyecto.
-// Base de datos: PostgreSQL.
-// ORM activo: Sequelize + sequelize-typescript.
+// Prisma ya no se usa en este proyecto.
 //
-// Modelos Sequelize:
-// - src/database/sequelize/models/user.model.ts
-// - src/database/sequelize/models/player.model.ts
-// - src/database/sequelize/models/club.model.ts
-// - src/database/sequelize/models/tournament.model.ts
-// - src/database/sequelize/models/tournament-photo.model.ts
+// Stack de base de datos:
+// - Esquema: migraciones SQL en src/database/migrations/ (Umzug + pg)
+// - ORM parcial: Sequelize (torneos y modelos en src/database/sequelize/models/)
+// - Queries: pg vía DatabaseService en la mayoría de módulos
 //
-// Migraciones (Umzug + pg):
-// - SQL: src/database/migrations/*.sql
-// - runner: src/database/umzug/run-migrations.ts
-// - comando: pnpm db:migrate (desde apps/api)
-
+// Comandos:
+//   pnpm db:migrate   — aplicar migraciones SQL
+//   pnpm db:seed      — datos de demo
+//   pnpm db:setup     — migrate + seed

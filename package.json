@@ -17,11 +17,13 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "db:migrate": "dotenv -e .env -- ts-node ./src/database/umzug/run-migrations.ts up",
-    "db:migrate:down": "dotenv -e .env -- ts-node ./src/database/umzug/run-migrations.ts down",
-    "db:migrate:pending": "dotenv -e .env -- ts-node ./src/database/umzug/run-migrations.ts pending",
-    "db:migrate:executed": "dotenv -e .env -- ts-node ./src/database/umzug/run-migrations.ts executed",
-    "db:migrate:create": "dotenv -e .env -- ts-node ./src/database/umzug/run-migrations.ts create"
+    "db:migrate": "dotenv -e .env -- ts-node --transpile-only ./src/database/umzug/run-migrations.ts up",
+    "db:migrate:down": "dotenv -e .env -- ts-node --transpile-only ./src/database/umzug/run-migrations.ts down",
+    "db:migrate:pending": "dotenv -e .env -- ts-node --transpile-only ./src/database/umzug/run-migrations.ts pending",
+    "db:migrate:executed": "dotenv -e .env -- ts-node --transpile-only ./src/database/umzug/run-migrations.ts executed",
+    "db:migrate:create": "dotenv -e .env -- ts-node --transpile-only ./src/database/umzug/run-migrations.ts create",
+    "db:seed": "dotenv -e .env -- ts-node --transpile-only ./src/database/seed/run-seed.ts",
+    "db:setup": "pnpm db:migrate && pnpm db:seed"
   },
   "dependencies": {
     "@nestjs/common": "^10.3.0",
