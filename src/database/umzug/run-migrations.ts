@@ -9,10 +9,17 @@ const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
 function databaseUrl(): string {
   const raw = process.env.DATABASE_URL;
   if (!raw) {
-    throw new Error('DATABASE_URL no está definida (carga apps/api/.env antes de migrar).');
+    throw new Error(
+      'DATABASE_URL no está definida. En local: apps/api/.env. En Vercel: variable de entorno (Build + Runtime).',
+    );
   }
-  const i = raw.indexOf('?');
-  return i === -1 ? raw : raw.slice(0, i);
+  try {
+    const url = new URL(raw);
+    url.searchParams.delete('schema');
+    return url.toString();
+  } catch {
+    return raw;
+  }
 }
 
 function buildUmzug(pool: Pool) {

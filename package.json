@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "nest build",
-    "vercel-build": "nest build",
+    "vercel-build": "pnpm db:migrate:ci && pnpm build",
+    "db:migrate:ci": "ts-node --transpile-only ./src/database/umzug/run-migrations.ts up",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "dev": "nest start --watch",
@@ -43,6 +44,7 @@
     "passport-jwt": "^4.0.1",
     "pg": "^8.16.3",
     "pg-hstore": "^2.3.4",
+    "umzug": "^3.8.3",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1",
     "sequelize": "^6.37.7",
@@ -77,7 +79,6 @@
     "ts-loader": "^9.5.1",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.3.3",
-    "umzug": "^3.8.3"
+    "typescript": "^5.3.3"
   }
 }
