@@ -212,7 +212,7 @@ export class CircuitsService {
     if (!role) {
       throw new ForbiddenException('Usuario inválido');
     }
-    if (!['CLUB_ADMIN', 'SUPER_ADMIN'].includes(role)) {
+    if (!['ORGANIZER', 'SUPER_ADMIN'].includes(role)) {
       throw new ForbiddenException('Solo cuentas de organizador pueden realizar esta acción');
     }
   }

@@ -1,14 +1,9 @@
-import {
-  ConflictException,
-  Injectable,
-  Logger,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
-import { RegisterDto, LoginDto } from './dto';
 import { AuthRepository } from './auth.repository';
+import { LoginDto, RegisterDto } from './dto';
 
 @Injectable()
 export class AuthService {
@@ -16,7 +11,7 @@ export class AuthService {
 
   constructor(
     private readonly authRepository: AuthRepository,
-    private jwtService: JwtService,
+    private readonly jwtService: JwtService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -32,12 +27,10 @@ export class AuthService {
       name: dto.name,
       role: dto.role || 'PLAYER',
     });
-    if (user.role === 'PLAYER') {
-      await this.authRepository.createPlayerForUser(user.id);
-    }
+
+    await this.authRepository.createPlayerForUser(user.id);
 
     const token = this.generateToken(user.id, user.email);
-
     return {
       access_token: token,
       user,
@@ -56,7 +49,6 @@ export class AuthService {
     }
 
     const token = this.generateToken(user.id, user.email);
-
     return {
       access_token: token,
       user: {
@@ -73,7 +65,6 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('Usuario no encontrado');
     }
-
     return user;
   }
 

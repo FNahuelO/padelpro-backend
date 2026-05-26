@@ -7,6 +7,8 @@ import { DatabaseService } from '../database/database.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { v2 as cloudinary } from 'cloudinary';
+import { getLevelCategory, getMonthKey } from '../common/utils';
+import { levelToRating } from '../common/utils/player-rating.util';
 
 type Extras = Record<string, unknown>;
 
@@ -17,11 +19,6 @@ type MatchRow = {
   outcome: 'win' | 'loss' | 'draw';
   opponentNames: string[];
 };
-
-function levelToRating(level: number | null | undefined): number {
-  const l = level != null ? Number(level) : 2.5;
-  return Math.round(1000 + (l - 2.5) * 80);
-}
 
 function parseScore(score: string): { a: number; b: number } | null {
   const parts = score.split(/[-:]/).map((s) => parseInt(s.trim(), 10));
@@ -85,8 +82,14 @@ export class UsersService {
     const extras = this.parseExtras(row);
     const prefs = (extras.preferences as Extras) || {};
 
-    const matchRows = await this.loadMatchRowsForUser(userId);
-    const wl = tallyWL(matchRows);
+    const matchStats = await this.getMatchStats(userId);
+    const monthKey = getMonthKey();
+    const competitiveMonthly = await this.db.query(
+      `SELECT points, matches_played FROM player_competitive_monthly_points
+       WHERE user_id = $1 AND month_key = $2`,
+      [userId, monthKey],
+    );
+    const competitiveRow = competitiveMonthly.rows[0];
 
     const mainClubId = (extras.mainClubId as string) || undefined;
     let mainClub: { id: string; name: string; zone?: string } | undefined;
@@ -120,15 +123,16 @@ export class UsersService {
       photo: row.photo_url ?? undefined,
       location,
       rating: levelToRating(row.level),
-      levelCategory: row.level != null ? String(row.level) : '2.5',
+      levelCategory: getLevelCategory(levelToRating(row.level)),
       mainClubId,
       mainClub,
       weeklyRankPosition: null,
       sports: ['Pádel'],
-      stats: {
-        matches: matchRows.length,
-        wins: wl.wins,
-        losses: wl.losses,
+      stats: matchStats,
+      competitiveMonthly: {
+        monthKey,
+        points: competitiveRow?.points ?? 0,
+        matchesPlayed: competitiveRow?.matches_played ?? 0,
       },
       preferences: {
         preferredHand: (prefs.preferredHand as string) || mapPosition(row.position),
@@ -192,6 +196,46 @@ export class UsersService {
       losses: wl.losses,
       draws: wl.draws,
       history: historyOut,
+    };
+  }
+
+  async getMatchStats(userId: string) {
+    const matchRows = await this.loadMatchRowsForUser(userId);
+    const wl = tallyWL(matchRows);
+
+    const countRes = await this.db.query(
+      `SELECT COUNT(DISTINCT m.id)::int AS total,
+              COUNT(DISTINCT m.id) FILTER (
+                WHERE m.status = 'FINISHED'
+                  AND COALESCE(mr.result_status, 'pending') = 'confirmed'
+              )::int AS completed,
+              COUNT(DISTINCT m.id) FILTER (
+                WHERE NOT (
+                  m.status = 'FINISHED'
+                  AND COALESCE(mr.result_status, 'pending') = 'confirmed'
+                )
+              )::int AS not_completed
+       FROM matches m
+       INNER JOIN match_players mp ON mp.match_id = m.id
+         AND mp.status IN ('JOINED', 'CONFIRMED')
+       INNER JOIN players p ON p.id = mp.player_id AND p.user_id = $1
+       LEFT JOIN match_results mr ON mr.match_id = m.id`,
+      [userId],
+    );
+
+    const row = countRes.rows[0];
+    const completed = Number(row?.completed ?? 0);
+    const notCompleted = Number(row?.not_completed ?? 0);
+    const total = Number(row?.total ?? 0);
+
+    return {
+      wins: wl.wins,
+      losses: wl.losses,
+      draws: wl.draws,
+      completed,
+      notCompleted,
+      total,
+      winRate: completed > 0 ? Math.round((wl.wins / completed) * 100) : null,
     };
   }
 
@@ -279,6 +323,15 @@ export class UsersService {
     return out;
   }
 
+  private async ensurePlayerProfile(userId: string) {
+    await this.db.query(
+      `INSERT INTO players (user_id)
+       VALUES ($1)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId],
+    );
+  }
+
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     if (dto.name) {
       await this.db.query(`UPDATE users SET name = $2, updated_at = NOW() WHERE id = $1`, [
@@ -287,12 +340,14 @@ export class UsersService {
       ]);
     }
 
+    await this.ensurePlayerProfile(userId);
+
     const ures = await this.db.query(`SELECT id, bio, city, extras FROM players WHERE user_id = $1`, [
       userId,
     ]);
     const prow = ures.rows[0];
     if (!prow) {
-      return this.getProfile(userId);
+      throw new NotFoundException('No se pudo crear el perfil de jugador');
     }
 
     const extras = this.parseExtras(prow);
@@ -319,6 +374,8 @@ export class UsersService {
   }
 
   async updatePreferences(userId: string, dto: UpdatePreferencesDto) {
+    await this.ensurePlayerProfile(userId);
+
     const ures = await this.db.query(`SELECT id, extras FROM players WHERE user_id = $1`, [
       userId,
     ]);
@@ -357,6 +414,8 @@ export class UsersService {
       resource_type: 'image',
       transformation: [{ width: 800, crop: 'limit' }, { quality: 'auto' }],
     });
+
+    await this.ensurePlayerProfile(userId);
 
     await this.db.query(
       `UPDATE players SET photo_url = $2, updated_at = NOW() WHERE user_id = $1`,

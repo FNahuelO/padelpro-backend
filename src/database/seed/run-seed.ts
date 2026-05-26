@@ -15,6 +15,8 @@ const CLUBS = [
     zone: 'Palermo',
     address: 'Av. Libertador 4100',
     phone: '+54 11 4000-0001',
+    latitude: -34.5755,
+    longitude: -58.4238,
   },
   {
     id: 'a0000001-0001-4001-8001-000000000002',
@@ -23,6 +25,8 @@ const CLUBS = [
     zone: 'Zona Norte',
     address: 'Av. del Libertador 6000',
     phone: '+54 11 4000-0002',
+    latitude: -34.526,
+    longitude: -58.473,
   },
 ] as const;
 
@@ -50,9 +54,19 @@ const USERS = [
   {
     id: 'b0000001-0001-4001-8001-000000000003',
     email: 'admin@padely.com',
-    name: 'Admin Padely',
+    name: 'Admin Club',
     role: 'CLUB_ADMIN',
-    nickname: 'Admin',
+    nickname: 'AdminClub',
+    city: 'CABA',
+    zone: 'Palermo',
+    level: 4.0,
+  },
+  {
+    id: 'b0000001-0001-4001-8001-000000000004',
+    email: 'organizer@padely.com',
+    name: 'Organizador Padely',
+    role: 'ORGANIZER',
+    nickname: 'OrgPadely',
     city: 'CABA',
     zone: 'Palermo',
     level: 4.0,
@@ -92,19 +106,78 @@ async function main() {
 
     for (const club of CLUBS) {
       await pool.query(
-        `INSERT INTO clubs (id, name, city, zone, address, phone)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO clubs (id, name, city, zone, address, phone, latitude, longitude)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (id) DO UPDATE SET
            name = EXCLUDED.name,
            city = EXCLUDED.city,
            zone = EXCLUDED.zone,
            address = EXCLUDED.address,
            phone = EXCLUDED.phone,
+           latitude = EXCLUDED.latitude,
+           longitude = EXCLUDED.longitude,
            updated_at = NOW()`,
-        [club.id, club.name, club.city, club.zone, club.address, club.phone],
+        [
+          club.id,
+          club.name,
+          club.city,
+          club.zone,
+          club.address,
+          club.phone,
+          club.latitude,
+          club.longitude,
+        ],
       );
     }
     console.log(`✅ ${CLUBS.length} clubes`);
+
+    const SHOP_PRODUCTS = [
+      {
+        clubId: CLUBS[0].id,
+        name: 'Tubo de pelotas pro',
+        description: '3 pelotas nuevas para el partido',
+        price: 4500,
+        kind: 'MATCH_ADDON',
+        category: 'BALLS',
+      },
+      {
+        clubId: CLUBS[0].id,
+        name: 'Alquiler paleta',
+        description: 'Por partido',
+        price: 3500,
+        kind: 'MATCH_ADDON',
+        category: 'RENTAL',
+      },
+      {
+        clubId: CLUBS[0].id,
+        name: 'Agua 500ml',
+        description: null,
+        price: 800,
+        kind: 'GENERAL',
+        category: 'DRINKS',
+      },
+      {
+        clubId: CLUBS[1].id,
+        name: 'Tubo pelotas',
+        description: 'Extra para tu partido',
+        price: 4200,
+        kind: 'MATCH_ADDON',
+        category: 'BALLS',
+      },
+    ] as const;
+
+    for (const p of SHOP_PRODUCTS) {
+      await pool.query(
+        `INSERT INTO club_shop_products (club_id, name, description, price, kind, category, sort_order)
+         SELECT $1, $2, $3, $4, $5::shop_product_kind, $6, 0
+         WHERE NOT EXISTS (
+           SELECT 1 FROM club_shop_products
+           WHERE club_id = $1 AND name = $2
+         )`,
+        [p.clubId, p.name, p.description, p.price, p.kind, p.category],
+      );
+    }
+    console.log(`✅ productos de tienda demo`);
 
     for (const user of USERS) {
       await pool.query(
@@ -132,7 +205,7 @@ async function main() {
     }
     console.log(`✅ ${USERS.length} usuarios + perfiles player`);
     console.log(`   Contraseña demo: ${DEMO_PASSWORD}`);
-    console.log('   Emails: juan@example.com, maria@example.com, admin@padely.com');
+    console.log('   Emails: juan@example.com, maria@example.com, admin@padely.com, organizer@padely.com');
   } finally {
     await pool.end();
   }

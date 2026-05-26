@@ -1,0 +1,201 @@
+import { Injectable } from '@nestjs/common';
+import {
+  COMPETITIVE_BASE_POINTS,
+  type CompetitiveMatchOutcome,
+  computeCompetitiveMatchPoints,
+} from '../common/utils/category-scoring.util';
+import { getLevelCategory, getMonthKey } from '../common/utils';
+import { levelToRating } from '../common/utils/player-rating.util';
+import { DatabaseService } from '../database/database.service';
+
+type MatchParticipant = {
+  userId: string;
+  level: number | null;
+  rnk: number;
+};
+
+function userTeamFromRank(rnk: number, neededPlayers: number): 'A' | 'B' {
+  const half = Math.ceil(Math.max(neededPlayers, 2) / 2);
+  return rnk <= half ? 'A' : 'B';
+}
+
+function parseScore(score: string): { a: number; b: number } | null {
+  const parts = score.split(/[-:]/).map((s) => parseInt(s.trim(), 10));
+  if (parts.length >= 2 && !Number.isNaN(parts[0]) && !Number.isNaN(parts[1])) {
+    return { a: parts[0], b: parts[1] };
+  }
+  return null;
+}
+
+function matchOutcomeForPlayer(
+  myTeam: 'A' | 'B',
+  winnerTeam: string | null,
+  score: string | null,
+): CompetitiveMatchOutcome {
+  const pts = score ? parseScore(score) : null;
+  if (pts && pts.a === pts.b) return 'draw';
+  const w = String(winnerTeam || '')
+    .toUpperCase()
+    .trim();
+  if (w !== 'A' && w !== 'B') return 'draw';
+  return myTeam === w ? 'win' : 'loss';
+}
+
+@Injectable()
+export class CompetitiveScoringService {
+  constructor(private readonly db: DatabaseService) {}
+
+  async awardForFinishedMatch(matchId: string) {
+    const matchRes = await this.db.query(
+      `SELECT m.id, m.mode, m.tournament_id, m.date, m.needed_players,
+              mr.winner_team, mr.score
+       FROM matches m
+       LEFT JOIN match_results mr ON mr.match_id = m.id
+       WHERE m.id = $1`,
+      [matchId],
+    );
+    const match = matchRes.rows[0];
+    if (!match) return;
+    if (match.tournament_id) return;
+    if (match.mode !== 'competitive') return;
+
+    const already = await this.db.query(
+      `SELECT 1 FROM player_competitive_points_ledger WHERE match_id = $1 LIMIT 1`,
+      [matchId],
+    );
+    if (already.rows[0]) return;
+
+    const playersRes = await this.db.query(
+      `SELECT p.user_id, p.level,
+              ROW_NUMBER() OVER (ORDER BY mp.created_at) AS rnk
+       FROM match_players mp
+       INNER JOIN players p ON p.id = mp.player_id
+       WHERE mp.match_id = $1 AND mp.status IN ('JOINED', 'CONFIRMED')`,
+      [matchId],
+    );
+
+    const participants: MatchParticipant[] = playersRes.rows.map((row) => ({
+      userId: row.user_id,
+      level: row.level != null ? Number(row.level) : null,
+      rnk: Number(row.rnk),
+    }));
+
+    if (participants.length < 2) return;
+
+    const neededPlayers = Number(match.needed_players) || 4;
+    const monthKey = getMonthKey(new Date(match.date));
+
+    for (const player of participants) {
+      const myTeam = userTeamFromRank(player.rnk, neededPlayers);
+      const myCategory = getLevelCategory(levelToRating(player.level));
+
+      const opponents = participants
+        .filter((p) => p.userId !== player.userId)
+        .filter((p) => userTeamFromRank(p.rnk, neededPlayers) !== myTeam);
+
+      const opponentCategories = opponents.map((o) =>
+        getLevelCategory(levelToRating(o.level)),
+      );
+
+      const outcome = matchOutcomeForPlayer(
+        myTeam,
+        match.winner_team,
+        match.score,
+      );
+      const points = computeCompetitiveMatchPoints(
+        myCategory,
+        opponentCategories,
+        outcome,
+      );
+
+      const ledgerInsert = await this.db.query(
+        `INSERT INTO player_competitive_points_ledger (
+           user_id, match_id, month_key, points, base_points, my_category, opponent_categories
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (user_id, match_id) DO NOTHING
+         RETURNING id`,
+        [
+          player.userId,
+          matchId,
+          monthKey,
+          points,
+          COMPETITIVE_BASE_POINTS,
+          myCategory,
+          opponentCategories,
+        ],
+      );
+
+      if (!ledgerInsert.rows[0]) continue;
+
+      await this.db.query(
+        `INSERT INTO player_competitive_monthly_points (user_id, month_key, points, matches_played, updated_at)
+         VALUES ($1, $2, $3, 1, NOW())
+         ON CONFLICT (user_id, month_key)
+         DO UPDATE SET
+           points = player_competitive_monthly_points.points + EXCLUDED.points,
+           matches_played = player_competitive_monthly_points.matches_played + 1,
+           updated_at = NOW()`,
+        [player.userId, monthKey, points],
+      );
+    }
+  }
+
+  async getMyMonthlyPoints(userId: string, monthKey?: string) {
+    const key = monthKey ?? getMonthKey();
+    const result = await this.db.query(
+      `SELECT points, matches_played, month_key
+       FROM player_competitive_monthly_points
+       WHERE user_id = $1 AND month_key = $2`,
+      [userId, key],
+    );
+    const row = result.rows[0];
+    const levelRes = await this.db.query(`SELECT level FROM players WHERE user_id = $1`, [userId]);
+    const category = getLevelCategory(levelToRating(levelRes.rows[0]?.level));
+
+    return {
+      monthKey: key,
+      points: row?.points ?? 0,
+      matchesPlayed: row?.matches_played ?? 0,
+      levelCategory: category,
+    };
+  }
+
+  async getMonthlyLeaderboard(monthKey?: string, category?: string, limit = 50) {
+    const key = monthKey ?? getMonthKey();
+    const result = await this.db.query(
+      `SELECT u.id AS user_id, u.name, p.photo_url, p.level,
+              pcm.points, pcm.matches_played
+       FROM player_competitive_monthly_points pcm
+       INNER JOIN users u ON u.id = pcm.user_id
+       INNER JOIN players p ON p.user_id = u.id
+       WHERE pcm.month_key = $1
+       ORDER BY pcm.points DESC, pcm.matches_played DESC
+       LIMIT $2`,
+      [key, limit],
+    );
+
+    let entries = result.rows.map((row, index) => {
+      const rating = levelToRating(row.level);
+      const levelCategory = getLevelCategory(rating);
+      return {
+        position: index + 1,
+        userId: row.user_id,
+        name: row.name,
+        photo: row.photo_url,
+        level: row.level != null ? Number(row.level) : null,
+        rating,
+        levelCategory,
+        points: row.points,
+        matchesPlayed: row.matches_played,
+      };
+    });
+
+    if (category) {
+      entries = entries
+        .filter((e) => e.levelCategory === category)
+        .map((e, i) => ({ ...e, position: i + 1 }));
+    }
+
+    return { monthKey: key, category: category ?? null, entries };
+  }
+}

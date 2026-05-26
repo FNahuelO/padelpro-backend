@@ -1,109 +1,47 @@
-import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { NotificationType } from '@prisma/client';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { DatabaseService } from '../database/database.service';
 
 @Injectable()
 export class NotificationsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly db: DatabaseService) {}
 
-  async create(data: {
-    userId: string;
-    type: NotificationType;
-    title: string;
-    body: string;
-    data?: any;
-  }) {
-    return this.prisma.notification.create({ data });
+  async listForUser(userId: string) {
+    const result = await this.db.query(
+      `SELECT id, type, title, body, data, read, created_at
+       FROM notifications
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [userId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      title: row.title,
+      body: row.body,
+      data: row.data,
+      read: row.read,
+      createdAt: row.created_at,
+    }));
   }
 
-  async createMany(notifications: Array<{
-    userId: string;
-    type: NotificationType;
-    title: string;
-    body: string;
-    data?: any;
-  }>) {
-    return this.prisma.notification.createMany({ data: notifications });
+  async markRead(userId: string, notificationId: string) {
+    const result = await this.db.query(
+      `UPDATE notifications SET read = TRUE
+       WHERE id = $1 AND user_id = $2
+       RETURNING id`,
+      [notificationId, userId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Notificación no encontrada');
+    }
+    return { ok: true };
   }
 
-  async getMyNotifications(userId: string, limit = 50) {
-    return this.prisma.notification.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
-  }
-
-  async getUnreadCount(userId: string): Promise<number> {
-    return this.prisma.notification.count({
-      where: { userId, read: false },
-    });
-  }
-
-  async markAsRead(notificationId: string, userId: string) {
-    return this.prisma.notification.updateMany({
-      where: { id: notificationId, userId },
-      data: { read: true },
-    });
-  }
-
-  async markAllAsRead(userId: string) {
-    return this.prisma.notification.updateMany({
-      where: { userId, read: false },
-      data: { read: true },
-    });
-  }
-
-  // ── Helpers para crear notificaciones específicas ──
-
-  async notifyMatchInvite(userId: string, matchId: string, clubName?: string) {
-    return this.create({
+  async markAllRead(userId: string) {
+    await this.db.query(`UPDATE notifications SET read = TRUE WHERE user_id = $1 AND read = FALSE`, [
       userId,
-      type: 'MATCH_INVITE',
-      title: '🎾 Nuevo partido disponible',
-      body: clubName
-        ? `Te invitaron a un partido en ${clubName}`
-        : 'Te invitaron a un partido',
-      data: { matchId },
-    });
-  }
-
-  async notifyMatchConfirmed(userId: string, matchId: string) {
-    return this.create({
-      userId,
-      type: 'MATCH_CONFIRMED',
-      title: '✅ Partido confirmado',
-      body: '¡Todos los jugadores aceptaron! El partido está confirmado.',
-      data: { matchId },
-    });
-  }
-
-  async notifyRankingOvertaken(userId: string, overtakerName: string, clubName: string) {
-    return this.create({
-      userId,
-      type: 'RANKING_OVERTAKEN',
-      title: '📊 Te superaron en el ranking',
-      body: `${overtakerName} te superó en el ranking de ${clubName}`,
-    });
-  }
-
-  async notifyWeeklyWinner(userId: string, clubName: string, weekKey: string) {
-    return this.create({
-      userId,
-      type: 'RANKING_WEEKLY_WINNER',
-      title: '🏆 ¡Ganaste el ranking semanal!',
-      body: `Sos el N°1 de ${clubName} esta semana`,
-      data: { weekKey },
-    });
-  }
-
-  async notifyFriendRequest(userId: string, fromUserName: string) {
-    return this.create({
-      userId,
-      type: 'FRIEND_REQUEST',
-      title: '👋 Solicitud de amistad',
-      body: `${fromUserName} quiere ser tu amigo`,
-    });
+    ]);
+    return { ok: true };
   }
 }
-

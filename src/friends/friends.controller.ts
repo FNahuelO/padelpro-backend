@@ -1,60 +1,45 @@
-import {
-  Controller,
-  Post,
-  Get,
-  Param,
-  Delete,
-  UseGuards,
-} from '@nestjs/common';
-import { FriendsService } from './friends.service';
-import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { FriendsService } from './friends.service';
 
 @Controller('friends')
 @UseGuards(JwtAuthGuard)
 export class FriendsController {
-  constructor(private friendsService: FriendsService) {}
-
-  @Post('request/:userId')
-  async sendFriendRequest(
-    @Param('userId') toUserId: string,
-    @CurrentUser() user: any,
-  ) {
-    return this.friendsService.sendFriendRequest(user.sub, toUserId);
-  }
-
-  @Post('accept/:requestId')
-  async acceptFriendRequest(
-    @Param('requestId') requestId: string,
-    @CurrentUser() user: any,
-  ) {
-    return this.friendsService.acceptFriendRequest(requestId, user.sub);
-  }
-
-  @Post('reject/:requestId')
-  async rejectFriendRequest(
-    @Param('requestId') requestId: string,
-    @CurrentUser() user: any,
-  ) {
-    return this.friendsService.rejectFriendRequest(requestId, user.sub);
-  }
-
-  @Delete(':friendId')
-  async deleteFriend(
-    @Param('friendId') friendId: string,
-    @CurrentUser() user: any,
-  ) {
-    return this.friendsService.deleteFriend(friendId, user.sub);
-  }
+  constructor(private readonly friendsService: FriendsService) {}
 
   @Get()
-  async getFriends(@CurrentUser() user: any) {
-    return this.friendsService.getFriends(user.sub);
+  list(@CurrentUser() user: { sub: string }) {
+    return this.friendsService.listFriends(user.sub);
   }
 
   @Get('pending')
-  async getPendingRequests(@CurrentUser() user: any) {
-    return this.friendsService.getPendingRequests(user.sub);
+  pending(@CurrentUser() user: { sub: string }) {
+    return this.friendsService.listPending(user.sub);
+  }
+
+  @Get('relation/:userId')
+  relation(@CurrentUser() user: { sub: string }, @Param('userId') userId: string) {
+    return this.friendsService.getRelation(user.sub, userId);
+  }
+
+  @Post('request/:userId')
+  request(@CurrentUser() user: { sub: string }, @Param('userId') userId: string) {
+    return this.friendsService.sendRequest(user.sub, userId);
+  }
+
+  @Post('accept/:requestId')
+  accept(@CurrentUser() user: { sub: string }, @Param('requestId') requestId: string) {
+    return this.friendsService.acceptRequest(user.sub, requestId);
+  }
+
+  @Post('reject/:requestId')
+  reject(@CurrentUser() user: { sub: string }, @Param('requestId') requestId: string) {
+    return this.friendsService.rejectRequest(user.sub, requestId);
+  }
+
+  @Delete(':friendId')
+  remove(@CurrentUser() user: { sub: string }, @Param('friendId') friendId: string) {
+    return this.friendsService.removeFriend(user.sub, friendId);
   }
 }
-

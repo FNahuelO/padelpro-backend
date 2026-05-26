@@ -41,11 +41,11 @@ export class AuthRepository {
     email: string;
     passwordHash: string;
     name: string;
-    role: 'PLAYER' | 'CLUB_ADMIN';
+    role: 'PLAYER' | 'CLUB_ADMIN' | 'ORGANIZER';
   }) {
     const result = await this.db.query(
       `INSERT INTO users (email, password_hash, name, role)
-       VALUES ($1, $2, $3, $4)
+       VALUES ($1, $2, $3, $4::user_role)
        RETURNING id, email, name, role`,
       [input.email, input.passwordHash, input.name, input.role],
     );

@@ -1,14 +1,25 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { MatchesController } from './matches.controller';
 import { MatchesService } from './matches.service';
 import { MatchesRepository } from './matches.repository';
+import { ClubsModule } from '../clubs/clubs.module';
+import { CompetitiveScoringModule } from '../competitive-scoring/competitive-scoring.module';
 import { RealtimeModule } from '../realtime/realtime.module';
+import { PaymentsModule } from '../payments/payments.module';
+import { MatchResultExpiryService } from './match-result-expiry.service';
 
 @Module({
-  imports: [RealtimeModule],
+  imports: [
+    ScheduleModule,
+    RealtimeModule,
+    ClubsModule,
+    CompetitiveScoringModule,
+    forwardRef(() => PaymentsModule),
+  ],
   controllers: [MatchesController],
-  providers: [MatchesService, MatchesRepository],
-  exports: [MatchesService],
+  providers: [MatchesService, MatchesRepository, MatchResultExpiryService],
+  exports: [MatchesService, MatchesRepository],
 })
 export class MatchesModule {}
 

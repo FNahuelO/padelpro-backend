@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { UpdatePlayerDto } from './dto/update-player.dto';
@@ -23,6 +23,15 @@ export class PlayersController {
   @Get()
   listPlayers() {
     return this.playersService.list();
+  }
+
+  @Get('search')
+  @UseGuards(JwtAuthGuard)
+  searchPlayers(
+    @CurrentUser() user: { sub: string },
+    @Query('q') q?: string,
+  ) {
+    return this.playersService.search(q, user.sub);
   }
 
   @Get(':id')

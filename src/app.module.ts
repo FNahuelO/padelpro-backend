@@ -1,48 +1,57 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthModule } from './auth/auth.module';
+import { DatabaseModule } from './database/database.module';
+import { CircuitsModule } from './circuits/circuits.module';
 import { ClubsModule } from './clubs/clubs.module';
+import { FriendsModule } from './friends/friends.module';
+import { MessagingModule } from './messaging/messaging.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { PlayersModule } from './players/players.module';
+import { UsersModule } from './users/users.module';
 import { MatchesModule } from './matches/matches.module';
 import { ChatModule } from './chat/chat.module';
-import { HealthController } from './health/health.controller';
-import { DatabaseModule } from './database/database.module';
-import { PlayersModule } from './players/players.module';
 import { CommunityModule } from './community/community.module';
-import { TournamentsModule } from './tournaments/tournaments.module';
-import { CircuitsModule } from './circuits/circuits.module';
+import { AvailabilityModule } from './availability/availability.module';
+import { MatchmakingModule } from './matchmaking/matchmaking.module';
 import { RealtimeModule } from './realtime/realtime.module';
-import { ThirdTimeModule } from './third-time/third-time.module';
 import { ShopModule } from './shop/shop.module';
-import { SequelizeModule } from './database/sequelize/sequelize.module';
-import { UsersModule } from './users/users.module';
+import { PaymentsModule } from './payments/payments.module';
+import { CompetitiveScoringModule } from './competitive-scoring/competitive-scoring.module';
+import { HealthController } from './health/health.controller';
 
 @Module({
-  controllers: [HealthController],
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    ScheduleModule.forRoot(),
     JwtModule.register({
       global: true,
       secret: process.env.JWT_SECRET || 'default-secret',
       signOptions: { expiresIn: process.env.JWT_EXPIRES_IN || '7d' },
     }),
     DatabaseModule,
-    SequelizeModule,
     RealtimeModule,
     AuthModule,
+    UsersModule,
     PlayersModule,
-    ClubsModule,
     MatchesModule,
     ChatModule,
     CommunityModule,
-    TournamentsModule,
+    AvailabilityModule,
+    MatchmakingModule,
+    ClubsModule,
     CircuitsModule,
-    ThirdTimeModule,
+    FriendsModule,
+    MessagingModule,
+    NotificationsModule,
     ShopModule,
-    UsersModule,
+    PaymentsModule,
+    CompetitiveScoringModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}
-

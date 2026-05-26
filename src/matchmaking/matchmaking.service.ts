@@ -1,190 +1,180 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { DatabaseService } from '../database/database.service';
 import { AvailabilityService } from '../availability/availability.service';
-import { getLevelCategory, getCategoryRatingRange } from '../common/utils';
+import { MatchesRepository } from '../matches/matches.repository';
+import { MatchesService } from '../matches/matches.service';
+import { MatchInviteDto } from '../matches/dto/match-invite.dto';
+import { getCategoryLevelRange, defaultLevelBand } from '../common/utils/level-range.util';
 
 @Injectable()
 export class MatchmakingService {
   constructor(
-    private prisma: PrismaService,
-    private availabilityService: AvailabilityService,
+    private readonly db: DatabaseService,
+    private readonly availabilityService: AvailabilityService,
+    private readonly matchesRepository: MatchesRepository,
+    private readonly matchesService: MatchesService,
   ) {}
 
-  /**
-   * Crear un MatchRequest (solicitud de partido).
-   */
-  async createMatchRequest(userId: string, data: {
-    clubId?: string;
-    date: Date;
-    startHour: number;
-    endHour: number;
-    minRating?: number;
-    maxRating?: number;
-    category?: string;
-  }) {
-    return this.prisma.matchRequest.create({
-      data: {
-        ...data,
+  async createMatchRequest(
+    userId: string,
+    data: {
+      clubId?: string;
+      date: Date;
+      startHour: number;
+      endHour: number;
+      minRating?: number;
+      maxRating?: number;
+      category?: string;
+    },
+  ) {
+    let levelMin = data.minRating ?? null;
+    let levelMax = data.maxRating ?? null;
+
+    if (data.category && levelMin == null && levelMax == null) {
+      const range = getCategoryLevelRange(data.category);
+      levelMin = range.min;
+      levelMax = range.max;
+    }
+
+    if (levelMin == null || levelMax == null) {
+      const playerLevel = await this.matchesRepository.getPlayerLevelByUserId(userId);
+      const band = defaultLevelBand(playerLevel ?? 2.5);
+      levelMin = levelMin ?? band.min;
+      levelMax = levelMax ?? band.max;
+    }
+
+    const result = await this.db.query(
+      `INSERT INTO match_requests (
+         user_id, club_id, match_date, start_hour, end_hour, level_min, level_max, category
+       ) VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
         userId,
-        date: new Date(data.date),
-      },
-    });
+        data.clubId ?? null,
+        data.date,
+        data.startHour,
+        data.endHour,
+        levelMin,
+        levelMax,
+        data.category ?? null,
+      ],
+    );
+    return result.rows[0];
   }
 
   /**
-   * MVP Matchmaking:
-   * 1. Buscar candidatos con disponibilidad compatible
-   * 2. Filtrar por rating/categoría
-   * 3. Armar propuesta de 4 jugadores
-   * 4. Crear Match con status=PROPOSED y participantes con status=INVITED
-   * 5. El creador ya tiene status=ACCEPTED automáticamente
+   * Busca jugadores por disponibilidad y nivel, arma partido de 4 y confirma al creador.
    */
-  async runMatchmaking(matchRequestId: string, userId: string) {
-    const matchRequest = await this.prisma.matchRequest.findUnique({
-      where: { id: matchRequestId },
-      include: { user: { select: { id: true, name: true, rating: true, photo: true } } },
-    });
+  async runMatchmaking(matchRequestId: string, userId: string, invites?: MatchInviteDto[]) {
+    const requestResult = await this.db.query(
+      `SELECT mr.*, u.name AS creator_name, p.level AS creator_level
+       FROM match_requests mr
+       INNER JOIN users u ON u.id = mr.user_id
+       LEFT JOIN players p ON p.user_id = mr.user_id
+       WHERE mr.id = $1`,
+      [matchRequestId],
+    );
+    const matchRequest = requestResult.rows[0];
 
     if (!matchRequest) {
       throw new NotFoundException('Solicitud de partido no encontrada');
     }
-
-    if (matchRequest.userId !== userId) {
+    if (matchRequest.user_id !== userId) {
       throw new BadRequestException('No podés ejecutar matchmaking de otro usuario');
     }
-
     if (matchRequest.status !== 'PENDING') {
       throw new BadRequestException('Esta solicitud ya fue procesada');
     }
 
-    // Determinar filtros de rating
-    let minRating = matchRequest.minRating ?? undefined;
-    let maxRating = matchRequest.maxRating ?? undefined;
-
-    // Si se especificó categoría, usar rangos de esa categoría
-    if (matchRequest.category && !minRating && !maxRating) {
-      const range = getCategoryRatingRange(matchRequest.category);
-      minRating = range.min;
-      maxRating = range.max;
-    }
-
-    // Buscar usuarios disponibles
-    const availableUsers = await this.availabilityService.findAvailableUsers({
-      date: matchRequest.date,
-      startHour: matchRequest.startHour,
-      endHour: matchRequest.endHour,
-      clubId: matchRequest.clubId || undefined,
-      minRating,
-      maxRating,
-      excludeUserIds: [matchRequest.userId],
-    });
-
-    if (availableUsers.length < 3) {
-      throw new BadRequestException(
-        `No hay suficientes jugadores disponibles (encontrados: ${availableUsers.length}, necesarios: 3)`,
-      );
-    }
-
-    // Ordenar candidatos por cercanía de rating al creador
-    const creatorRating = matchRequest.user.rating;
-    const sorted = [...availableUsers].sort(
-      (a, b) => Math.abs(a.rating - creatorRating) - Math.abs(b.rating - creatorRating),
+    const { orderedPlayerIds, invitedUserIds } = await this.matchesService.resolveInvites(
+      userId,
+      invites,
     );
+    const slotsToFill = 3 - orderedPlayerIds.length;
+    if (slotsToFill < 0) {
+      throw new BadRequestException('Solo podés invitar hasta 3 jugadores (1 compañero y 2 rivales)');
+    }
 
-    // Seleccionar los 3 más cercanos
-    const selectedUsers = sorted.slice(0, 3);
+    const matchDate = new Date(matchRequest.match_date);
+    let autoSelected: { player_id: string; user_id: string; level: number }[] = [];
 
-    // Calcular bonus points por horario valle
-    let bonusPoints = 0;
-    if (matchRequest.clubId) {
-      const dayOfWeek = matchRequest.date.getDay();
-      const hour = matchRequest.startHour;
-
-      const promotion = await this.prisma.clubPromotion.findFirst({
-        where: {
-          clubId: matchRequest.clubId,
-          dayOfWeek,
-          startHour: { lte: hour },
-          endHour: { gte: hour },
-          active: true,
-        },
+    if (slotsToFill > 0) {
+      const candidates = await this.availabilityService.findAvailablePlayers({
+        date: matchDate,
+        startHour: matchRequest.start_hour,
+        endHour: matchRequest.end_hour,
+        clubId: matchRequest.club_id || undefined,
+        levelMin: matchRequest.level_min != null ? Number(matchRequest.level_min) : undefined,
+        levelMax: matchRequest.level_max != null ? Number(matchRequest.level_max) : undefined,
+        excludeUserIds: [matchRequest.user_id, ...invitedUserIds],
       });
 
-      if (promotion) {
-        bonusPoints = promotion.bonusPoints;
-      } else if (hour >= 10 && hour < 16) {
-        // Horario valle básico si no hay promoción específica
-        bonusPoints = 10;
+      if (candidates.length < slotsToFill) {
+        throw new BadRequestException(
+          `No hay suficientes jugadores disponibles (encontrados: ${candidates.length}, necesarios: ${slotsToFill})`,
+        );
       }
+
+      const creatorLevel = Number(matchRequest.creator_level ?? 2.5);
+      const sorted = [...candidates].sort(
+        (a, b) =>
+          Math.abs(Number(a.level) - creatorLevel) - Math.abs(Number(b.level) - creatorLevel),
+      );
+      autoSelected = sorted.slice(0, slotsToFill);
     }
 
-    // Crear Match con status=PROPOSED
-    const allParticipants = [
-      { userId: matchRequest.userId, team: 'A' as const, isCaptain: true, status: 'ACCEPTED' as const },
-      { userId: selectedUsers[0].id, team: 'A' as const, isCaptain: false, status: 'INVITED' as const },
-      { userId: selectedUsers[1].id, team: 'B' as const, isCaptain: false, status: 'INVITED' as const },
-      { userId: selectedUsers[2].id, team: 'B' as const, isCaptain: false, status: 'INVITED' as const },
-    ];
+    const startAt = new Date(matchDate);
+    startAt.setHours(matchRequest.start_hour, 0, 0, 0);
 
-    const match = await this.prisma.match.create({
-      data: {
-        clubId: matchRequest.clubId,
-        date: matchRequest.date,
-        startHour: matchRequest.startHour,
-        endHour: matchRequest.endHour,
-        status: 'PROPOSED',
-        bonusPointsApplied: bonusPoints,
-        participants: {
-          create: allParticipants.map((p) => ({
-            userId: p.userId,
-            team: p.team,
-            isCaptain: p.isCaptain,
-            status: p.status,
-            ...(p.status === 'ACCEPTED' ? { confirmedAt: new Date() } : {}),
-          })),
-        },
-      },
-      include: {
-        participants: {
-          include: {
-            user: { select: { id: true, name: true, rating: true, photo: true } },
-          },
-        },
-        club: { select: { id: true, name: true, address: true } },
-      },
-    });
+    const matchInsert = await this.db.query(
+      `INSERT INTO matches (
+         club_id, created_by_user_id, title, description, date, zone,
+         level_min, level_max, gender, mode, needed_players, status
+       ) VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, 'open', 'friendly', 4, 'FULL')
+       RETURNING *`,
+      [
+        matchRequest.club_id,
+        userId,
+        'Partido matchmaking',
+        'Armado automáticamente según disponibilidad y nivel',
+        startAt.toISOString(),
+        matchRequest.level_min,
+        matchRequest.level_max,
+      ],
+    );
+    const match = matchInsert.rows[0];
 
-    // Marcar matchRequest como MATCHED
-    await this.prisma.matchRequest.update({
-      where: { id: matchRequestId },
-      data: { status: 'MATCHED' },
-    });
+    const creatorPlayerId = await this.matchesRepository.getPlayerIdByUserId(userId);
+    if (!creatorPlayerId) {
+      throw new BadRequestException('Completá tu perfil de jugador antes de buscar partido');
+    }
 
-    return {
-      ...match,
-      participants: match.participants.map((p) => ({
-        ...p,
-        user: {
-          ...p.user,
-          levelCategory: getLevelCategory(p.user.rating),
-        },
-      })),
-    };
+    await this.matchesRepository.join(match.id, creatorPlayerId, 'CONFIRMED');
+    for (const playerId of orderedPlayerIds) {
+      await this.matchesRepository.join(match.id, playerId, 'JOINED');
+    }
+    for (const player of autoSelected) {
+      await this.matchesRepository.join(match.id, player.player_id, 'JOINED');
+    }
+
+    await this.matchesRepository.createMatchChatIfMissing(match.id);
+
+    await this.db.query(`UPDATE match_requests SET status = 'MATCHED' WHERE id = $1`, [
+      matchRequestId,
+    ]);
+
+    return this.matchesRepository.getDetail(match.id);
   }
 
   async getMyMatchRequests(userId: string) {
-    return this.prisma.matchRequest.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
-      },
-    });
+    const result = await this.db.query(
+      `SELECT mr.*, u.name AS user_name
+       FROM match_requests mr
+       INNER JOIN users u ON u.id = mr.user_id
+       WHERE mr.user_id = $1
+       ORDER BY mr.created_at DESC`,
+      [userId],
+    );
+    return result.rows;
   }
 }

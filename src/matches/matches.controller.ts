@@ -12,6 +12,8 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { CreateMatchResultDto } from './dto/create-match-result.dto';
+import { ConfirmMatchResultDto } from './dto/confirm-match-result.dto';
+import { RejectMatchResultDto } from './dto/reject-match-result.dto';
 import { UpdateMatchStatusDto } from './dto/update-match-status.dto';
 
 @Controller('matches')
@@ -34,9 +36,24 @@ export class MatchesController {
     return this.matchesService.getMyMatches(user.sub);
   }
 
+  @Get(':id/deposit')
+  getDeposit(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.matchesService.getDepositStatus(id, user.sub);
+  }
+
+  @Post(':id/deposit/checkout')
+  createDepositCheckout(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.matchesService.createDepositCheckout(id, user.sub);
+  }
+
+  @Post(':id/deposit/simulate')
+  simulateDeposit(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.matchesService.simulateDepositPayment(id, user.sub);
+  }
+
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    return this.matchesService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.matchesService.findOne(id, user.sub);
   }
 
   @Post(':id/join')
@@ -47,6 +64,11 @@ export class MatchesController {
   @Post(':id/leave')
   leaveMatch(@Param('id') id: string, @CurrentUser() user: any) {
     return this.matchesService.leaveMatch(id, user.sub);
+  }
+
+  @Post(':id/confirm')
+  confirmMatch(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.matchesService.confirmMatch(id, user.sub);
   }
 
   @Patch(':id/status')
@@ -61,6 +83,33 @@ export class MatchesController {
     @Body() dto: CreateMatchResultDto,
   ) {
     return this.matchesService.submitResult(id, user.sub, dto);
+  }
+
+  @Post(':id/rival-reviews')
+  submitRivalReviews(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body() dto: ConfirmMatchResultDto,
+  ) {
+    return this.matchesService.submitRivalReviews(id, user.sub, dto);
+  }
+
+  @Post(':id/result/reject')
+  rejectResult(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body() dto: RejectMatchResultDto,
+  ) {
+    return this.matchesService.rejectResult(id, user.sub, dto);
+  }
+
+  @Post(':id/result/confirm')
+  confirmResult(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Body() dto: ConfirmMatchResultDto,
+  ) {
+    return this.matchesService.confirmResult(id, user.sub, dto);
   }
 }
 

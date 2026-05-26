@@ -65,4 +65,29 @@ export class PlayersRepository {
     );
     return result.rows[0] ?? null;
   }
+
+  searchPlayers(query: string, excludeUserId: string, limit = 20) {
+    const pattern = `%${query.trim()}%`;
+    return this.db.query(
+      `SELECT p.id,
+              p.user_id,
+              u.name,
+              p.nickname,
+              p.level,
+              p.photo_url,
+              p.zone,
+              p.city
+       FROM players p
+       INNER JOIN users u ON u.id = p.user_id
+       WHERE p.user_id <> $1
+         AND (
+           u.name ILIKE $2
+           OR COALESCE(p.nickname, '') ILIKE $2
+           OR u.email ILIKE $2
+         )
+       ORDER BY u.name ASC
+       LIMIT $3`,
+      [excludeUserId, pattern, limit],
+    );
+  }
 }

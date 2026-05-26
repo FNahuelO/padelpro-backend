@@ -1,4 +1,7 @@
+import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
   IsIn,
   IsInt,
@@ -6,7 +9,9 @@ import {
   IsString,
   Max,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { MatchInviteDto } from './match-invite.dto';
 
 export class CreateMatchDto {
   @IsOptional()
@@ -47,4 +52,11 @@ export class CreateMatchDto {
   @Min(2)
   @Max(8)
   neededPlayers: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(3)
+  @ValidateNested({ each: true })
+  @Type(() => MatchInviteDto)
+  invites?: MatchInviteDto[];
 }

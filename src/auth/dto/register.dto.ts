@@ -17,7 +17,6 @@ export class RegisterDto {
   photo?: string;
 
   @IsOptional()
-  @IsIn(['PLAYER', 'CLUB_ADMIN'])
-  role?: 'PLAYER' | 'CLUB_ADMIN';
+  @IsIn(['PLAYER', 'CLUB_ADMIN', 'ORGANIZER'])
+  role?: 'PLAYER' | 'CLUB_ADMIN' | 'ORGANIZER';
 }
-

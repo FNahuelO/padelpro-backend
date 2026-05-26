@@ -1,179 +1,162 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { DatabaseService } from '../database/database.service';
 
 @Injectable()
 export class FriendsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly db: DatabaseService) {}
 
-  async sendFriendRequest(fromUserId: string, toUserId: string) {
-    if (fromUserId === toUserId) {
-      throw new BadRequestException('No puedes agregarte a ti mismo');
-    }
-
-    const existing = await this.prisma.friendRequest.findFirst({
-      where: {
-        OR: [
-          { fromUserId, toUserId },
-          { fromUserId: toUserId, toUserId: fromUserId },
-        ],
-      },
-    });
-
-    if (existing) {
-      throw new BadRequestException('Ya existe una solicitud de amistad');
-    }
-
-    return this.prisma.friendRequest.create({
-      data: {
-        fromUserId,
-        toUserId,
-      },
-      include: {
-        fromUser: {
-          select: {
-            id: true,
-            name: true,
-            photo: true,
-          },
-        },
-        toUser: {
-          select: {
-            id: true,
-            name: true,
-            photo: true,
-          },
-        },
-      },
-    });
+  async resolveUserId(playerOrUserId: string): Promise<string> {
+    const byUser = await this.db.query(`SELECT id FROM users WHERE id = $1`, [playerOrUserId]);
+    if (byUser.rows[0]) return playerOrUserId;
+    const byPlayer = await this.db.query(`SELECT user_id FROM players WHERE id = $1`, [playerOrUserId]);
+    if (byPlayer.rows[0]?.user_id) return byPlayer.rows[0].user_id;
+    throw new NotFoundException('Usuario no encontrado');
   }
 
-  async acceptFriendRequest(requestId: string, userId: string) {
-    const request = await this.prisma.friendRequest.findUnique({
-      where: { id: requestId },
-    });
-
-    if (!request) {
-      throw new NotFoundException('Solicitud no encontrada');
-    }
-
-    if (request.toUserId !== userId) {
-      throw new BadRequestException('No puedes aceptar esta solicitud');
-    }
-
-    return this.prisma.friendRequest.update({
-      where: { id: requestId },
-      data: { status: 'ACCEPTED' },
-      include: {
-        fromUser: {
-          select: {
-            id: true,
-            name: true,
-            photo: true,
-          },
-        },
-        toUser: {
-          select: {
-            id: true,
-            name: true,
-            photo: true,
-          },
-        },
-      },
-    });
-  }
-
-  async rejectFriendRequest(requestId: string, userId: string) {
-    const request = await this.prisma.friendRequest.findUnique({
-      where: { id: requestId },
-    });
-
-    if (!request) {
-      throw new NotFoundException('Solicitud no encontrada');
-    }
-
-    if (request.toUserId !== userId) {
-      throw new BadRequestException('No puedes rechazar esta solicitud');
-    }
-
-    return this.prisma.friendRequest.update({
-      where: { id: requestId },
-      data: { status: 'REJECTED' },
-    });
-  }
-
-  async deleteFriend(friendId: string, userId: string) {
-    const request = await this.prisma.friendRequest.findFirst({
-      where: {
-        status: 'ACCEPTED',
-        OR: [
-          { fromUserId: userId, toUserId: friendId },
-          { fromUserId: friendId, toUserId: userId },
-        ],
-      },
-    });
-
-    if (!request) {
-      throw new NotFoundException('Amistad no encontrada');
-    }
-
-    await this.prisma.friendRequest.delete({
-      where: { id: request.id },
-    });
-
-    return { message: 'Amigo eliminado' };
-  }
-
-  async getFriends(userId: string) {
-    const requests = await this.prisma.friendRequest.findMany({
-      where: {
-        status: 'ACCEPTED',
-        OR: [
-          { fromUserId: userId },
-          { toUserId: userId },
-        ],
-      },
-      include: {
-        fromUser: {
-          select: {
-            id: true,
-            name: true,
-            photo: true,
-            rating: true,
-          },
-        },
-        toUser: {
-          select: {
-            id: true,
-            name: true,
-            photo: true,
-            rating: true,
-          },
-        },
-      },
-    });
-
-    return requests.map((r) =>
-      r.fromUserId === userId ? r.toUser : r.fromUser,
+  async listFriends(userId: string) {
+    const result = await this.db.query(
+      `SELECT
+         fr.id AS request_id,
+         CASE WHEN fr.requester_id = $1 THEN fr.addressee_id ELSE fr.requester_id END AS user_id,
+         u.name,
+         u.photo,
+         p.photo_url,
+         p.nickname,
+         fr.updated_at
+       FROM friend_requests fr
+       INNER JOIN users u ON u.id = CASE WHEN fr.requester_id = $1 THEN fr.addressee_id ELSE fr.requester_id END
+       LEFT JOIN players p ON p.user_id = u.id
+       WHERE fr.status = 'accepted'
+         AND (fr.requester_id = $1 OR fr.addressee_id = $1)
+       ORDER BY u.name ASC`,
+      [userId],
     );
+    return result.rows;
   }
 
-  async getPendingRequests(userId: string) {
-    return this.prisma.friendRequest.findMany({
-      where: {
-        toUserId: userId,
-        status: 'PENDING',
-      },
-      include: {
-        fromUser: {
-          select: {
-            id: true,
-            name: true,
-            photo: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  async listPending(userId: string) {
+    const incoming = await this.db.query(
+      `SELECT fr.id, fr.requester_id, fr.created_at, u.name, p.photo_url, p.nickname
+       FROM friend_requests fr
+       INNER JOIN users u ON u.id = fr.requester_id
+       LEFT JOIN players p ON p.user_id = u.id
+       WHERE fr.addressee_id = $1 AND fr.status = 'pending'
+       ORDER BY fr.created_at DESC`,
+      [userId],
+    );
+    const outgoing = await this.db.query(
+      `SELECT fr.id, fr.addressee_id AS user_id, fr.created_at, u.name, p.photo_url
+       FROM friend_requests fr
+       INNER JOIN users u ON u.id = fr.addressee_id
+       LEFT JOIN players p ON p.user_id = u.id
+       WHERE fr.requester_id = $1 AND fr.status = 'pending'
+       ORDER BY fr.created_at DESC`,
+      [userId],
+    );
+    return { incoming: incoming.rows, outgoing: outgoing.rows };
+  }
+
+  async sendRequest(userId: string, targetId: string) {
+    const otherUserId = await this.resolveUserId(targetId);
+    if (userId === otherUserId) {
+      throw new BadRequestException('No podés agregarte a vos mismo');
+    }
+    const existing = await this.db.query(
+      `SELECT id, status, requester_id FROM friend_requests
+       WHERE (requester_id = $1 AND addressee_id = $2)
+          OR (requester_id = $2 AND addressee_id = $1)`,
+      [userId, otherUserId],
+    );
+    const row = existing.rows[0];
+    if (row?.status === 'accepted') {
+      throw new BadRequestException('Ya son amigos');
+    }
+    if (row?.status === 'pending') {
+      throw new BadRequestException(
+        row.requester_id === userId ? 'Ya enviaste una solicitud de amistad' : 'Ya tenés una solicitud pendiente de este usuario',
+      );
+    }
+    const result = await this.db.query(
+      `INSERT INTO friend_requests (requester_id, addressee_id, status)
+       VALUES ($1, $2, 'pending')
+       ON CONFLICT (requester_id, addressee_id) DO UPDATE
+         SET status = 'pending', updated_at = NOW()
+       RETURNING id, status, created_at`,
+      [userId, otherUserId],
+    );
+    return result.rows[0];
+  }
+
+  async acceptRequest(userId: string, requestId: string) {
+    const result = await this.db.query(
+      `UPDATE friend_requests
+       SET status = 'accepted', updated_at = NOW()
+       WHERE id = $1 AND addressee_id = $2 AND status = 'pending'
+       RETURNING id, requester_id, addressee_id, status`,
+      [requestId, userId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Solicitud no encontrada o ya procesada');
+    }
+    return result.rows[0];
+  }
+
+  async rejectRequest(userId: string, requestId: string) {
+    const result = await this.db.query(
+      `UPDATE friend_requests
+       SET status = 'rejected', updated_at = NOW()
+       WHERE id = $1 AND addressee_id = $2 AND status = 'pending'
+       RETURNING id, status`,
+      [requestId, userId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Solicitud no encontrada o ya procesada');
+    }
+    return result.rows[0];
+  }
+
+  async removeFriend(userId: string, friendId: string) {
+    const otherUserId = await this.resolveUserId(friendId);
+    const result = await this.db.query(
+      `DELETE FROM friend_requests
+       WHERE status = 'accepted'
+         AND (
+           (requester_id = $1 AND addressee_id = $2)
+           OR (requester_id = $2 AND addressee_id = $1)
+         )
+       RETURNING id`,
+      [userId, otherUserId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('No son amigos');
+    }
+    return { ok: true };
+  }
+
+  async getRelation(userId: string, targetId: string) {
+    const otherUserId = await this.resolveUserId(targetId);
+    if (userId === otherUserId) return { status: 'self' as const };
+    const result = await this.db.query(
+      `SELECT id, status, requester_id, addressee_id FROM friend_requests
+       WHERE (requester_id = $1 AND addressee_id = $2)
+          OR (requester_id = $2 AND addressee_id = $1)
+       ORDER BY updated_at DESC LIMIT 1`,
+      [userId, otherUserId],
+    );
+    const row = result.rows[0];
+    if (!row) return { status: 'none' as const };
+    if (row.status === 'accepted') return { status: 'friends' as const, requestId: row.id };
+    if (row.status === 'pending') {
+      return {
+        status: row.requester_id === userId ? ('pending_outgoing' as const) : ('pending_incoming' as const),
+        requestId: row.id,
+      };
+    }
+    return { status: 'none' as const };
   }
 }
-

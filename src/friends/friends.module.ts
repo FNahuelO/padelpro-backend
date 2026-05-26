@@ -8,4 +8,3 @@ import { FriendsService } from './friends.service';
   exports: [FriendsService],
 })
 export class FriendsModule {}
-

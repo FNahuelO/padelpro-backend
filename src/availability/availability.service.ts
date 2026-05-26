@@ -1,70 +1,63 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { DatabaseService } from '../database/database.service';
+
+type AvailabilitySlot = {
+  dayOfWeek: number;
+  startHour: number;
+  endHour: number;
+  clubId?: string;
+};
 
 @Injectable()
 export class AvailabilityService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly db: DatabaseService) {}
 
-  async setAvailability(
-    userId: string,
-    availabilities: Array<{
-      dayOfWeek: number;
-      startHour: number;
-      endHour: number;
-      clubId?: string;
-    }>,
-  ) {
-    // Validar que no haya solapamientos entre los slots enviados
+  async setAvailability(userId: string, availabilities: AvailabilitySlot[]) {
     this.validateNoOverlaps(availabilities);
 
-    // Transacción: eliminar existentes y crear nuevos
-    const result = await this.prisma.$transaction(async (tx) => {
-      await tx.availability.deleteMany({
-        where: { userId },
-      });
+    await this.db.query(`DELETE FROM player_availability WHERE user_id = $1`, [userId]);
 
-      if (availabilities.length === 0) {
-        return [];
+    for (const slot of availabilities) {
+      if (slot.startHour >= slot.endHour) {
+        throw new BadRequestException('La hora de inicio debe ser anterior a la hora de fin');
       }
+      await this.db.query(
+        `INSERT INTO player_availability (user_id, day_of_week, start_hour, end_hour, club_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [userId, slot.dayOfWeek, slot.startHour, slot.endHour, slot.clubId ?? null],
+      );
+    }
 
-      await tx.availability.createMany({
-        data: availabilities.map((av) => ({
-          ...av,
-          userId,
-        })),
-      });
-
-      return tx.availability.findMany({
-        where: { userId },
-        orderBy: [{ dayOfWeek: 'asc' }, { startHour: 'asc' }],
-        include: { club: { select: { id: true, name: true } } },
-      });
-    });
-
-    return result;
+    return this.getMyAvailability(userId);
   }
 
   async getMyAvailability(userId: string) {
-    return this.prisma.availability.findMany({
-      where: { userId },
-      orderBy: [{ dayOfWeek: 'asc' }, { startHour: 'asc' }],
-      include: { club: { select: { id: true, name: true } } },
-    });
+    const result = await this.db.query(
+      `SELECT pa.id,
+              pa.day_of_week AS "dayOfWeek",
+              pa.start_hour AS "startHour",
+              pa.end_hour AS "endHour",
+              pa.club_id AS "clubId",
+              c.name AS "clubName"
+       FROM player_availability pa
+       LEFT JOIN clubs c ON c.id = pa.club_id
+       WHERE pa.user_id = $1
+       ORDER BY pa.day_of_week ASC, pa.start_hour ASC`,
+      [userId],
+    );
+    return result.rows;
   }
 
   async deleteSlot(userId: string, slotId: string) {
-    const slot = await this.prisma.availability.findFirst({
-      where: { id: slotId, userId },
-    });
-
-    if (!slot) {
+    const result = await this.db.query(
+      `DELETE FROM player_availability
+       WHERE id = $1 AND user_id = $2
+       RETURNING id`,
+      [slotId, userId],
+    );
+    if (result.rows.length === 0) {
       throw new NotFoundException('Horario no encontrado');
     }
-
-    await this.prisma.availability.delete({
-      where: { id: slotId },
-    });
-
     return { message: 'Horario eliminado' };
   }
 
@@ -73,125 +66,134 @@ export class AvailabilityService {
     slotId: string,
     data: { dayOfWeek?: number; startHour?: number; endHour?: number },
   ) {
-    const slot = await this.prisma.availability.findFirst({
-      where: { id: slotId, userId },
-    });
-
-    if (!slot) {
+    const current = await this.db.query(
+      `SELECT * FROM player_availability WHERE id = $1 AND user_id = $2`,
+      [slotId, userId],
+    );
+    if (current.rows.length === 0) {
       throw new NotFoundException('Horario no encontrado');
     }
 
-    const updatedStartHour = data.startHour ?? slot.startHour;
-    const updatedEndHour = data.endHour ?? slot.endHour;
+    const slot = current.rows[0];
+    const dayOfWeek = data.dayOfWeek ?? slot.day_of_week;
+    const startHour = data.startHour ?? slot.start_hour;
+    const endHour = data.endHour ?? slot.end_hour;
 
-    if (updatedStartHour >= updatedEndHour) {
-      throw new BadRequestException(
-        'La hora de inicio debe ser anterior a la hora de fin',
-      );
+    if (startHour >= endHour) {
+      throw new BadRequestException('La hora de inicio debe ser anterior a la hora de fin');
     }
 
-    // Verificar solapamiento con otros slots del mismo día
-    const updatedDay = data.dayOfWeek ?? slot.dayOfWeek;
-    const overlapping = await this.prisma.availability.findFirst({
-      where: {
-        userId,
-        id: { not: slotId },
-        dayOfWeek: updatedDay,
-        startHour: { lt: updatedEndHour },
-        endHour: { gt: updatedStartHour },
-      },
-    });
-
-    if (overlapping) {
-      throw new BadRequestException(
-        'El horario se solapa con otro ya existente',
-      );
+    const overlap = await this.db.query(
+      `SELECT id FROM player_availability
+       WHERE user_id = $1 AND id <> $2 AND day_of_week = $3
+         AND start_hour < $5 AND end_hour > $4
+       LIMIT 1`,
+      [userId, slotId, dayOfWeek, startHour, endHour],
+    );
+    if (overlap.rows.length > 0) {
+      throw new BadRequestException('El horario se solapa con otro ya existente');
     }
 
-    return this.prisma.availability.update({
-      where: { id: slotId },
-      data,
-    });
+    const updated = await this.db.query(
+      `UPDATE player_availability
+       SET day_of_week = $3, start_hour = $4, end_hour = $5
+       WHERE id = $1 AND user_id = $2
+       RETURNING id,
+                 day_of_week AS "dayOfWeek",
+                 start_hour AS "startHour",
+                 end_hour AS "endHour",
+                 club_id AS "clubId"`,
+      [slotId, userId, dayOfWeek, startHour, endHour],
+    );
+    return updated.rows[0];
   }
 
-  async addSlot(
-    userId: string,
-    slot: { dayOfWeek: number; startHour: number; endHour: number; clubId?: string },
-  ) {
+  async addSlot(userId: string, slot: AvailabilitySlot) {
     if (slot.startHour >= slot.endHour) {
-      throw new BadRequestException(
-        'La hora de inicio debe ser anterior a la hora de fin',
-      );
+      throw new BadRequestException('La hora de inicio debe ser anterior a la hora de fin');
     }
 
-    // Verificar solapamiento
-    const overlapping = await this.prisma.availability.findFirst({
-      where: {
-        userId,
-        dayOfWeek: slot.dayOfWeek,
-        startHour: { lt: slot.endHour },
-        endHour: { gt: slot.startHour },
-      },
-    });
-
-    if (overlapping) {
-      throw new BadRequestException(
-        'El horario se solapa con otro ya existente',
-      );
+    const overlap = await this.db.query(
+      `SELECT id FROM player_availability
+       WHERE user_id = $1 AND day_of_week = $2
+         AND start_hour < $4 AND end_hour > $3
+       LIMIT 1`,
+      [userId, slot.dayOfWeek, slot.startHour, slot.endHour],
+    );
+    if (overlap.rows.length > 0) {
+      throw new BadRequestException('El horario se solapa con otro ya existente');
     }
 
-    return this.prisma.availability.create({
-      data: { ...slot, userId },
-    });
+    const result = await this.db.query(
+      `INSERT INTO player_availability (user_id, day_of_week, start_hour, end_hour, club_id)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id,
+                 day_of_week AS "dayOfWeek",
+                 start_hour AS "startHour",
+                 end_hour AS "endHour",
+                 club_id AS "clubId"`,
+      [userId, slot.dayOfWeek, slot.startHour, slot.endHour, slot.clubId ?? null],
+    );
+    return result.rows[0];
   }
 
-  async findAvailableUsers(params: {
+  async findAvailablePlayers(params: {
     date: Date;
     startHour: number;
     endHour: number;
     clubId?: string;
-    minRating?: number;
-    maxRating?: number;
+    levelMin?: number;
+    levelMax?: number;
     excludeUserIds?: string[];
   }) {
     const dayOfWeek = params.date.getDay();
+    const values: unknown[] = [dayOfWeek, params.startHour, params.endHour];
+    let idx = 4;
 
-    const users = await this.prisma.user.findMany({
-      where: {
-        AND: [
-          {
-            availabilities: {
-              some: {
-                dayOfWeek,
-                startHour: { lte: params.startHour },
-                endHour: { gte: params.endHour },
-                ...(params.clubId ? { clubId: params.clubId } : {}),
-              },
-            },
-          },
-          params.minRating ? { rating: { gte: params.minRating } } : {},
-          params.maxRating ? { rating: { lte: params.maxRating } } : {},
-          params.excludeUserIds?.length
-            ? { id: { notIn: params.excludeUserIds } }
-            : {},
-        ],
-      },
-      select: {
-        id: true,
-        name: true,
-        rating: true,
-        photo: true,
-      },
-    });
+    let sql = `
+      SELECT DISTINCT p.id AS player_id,
+             p.user_id,
+             u.name,
+             p.level,
+             p.photo_url
+      FROM players p
+      INNER JOIN users u ON u.id = p.user_id
+      INNER JOIN player_availability pa ON pa.user_id = p.user_id
+      WHERE pa.day_of_week = $1
+        AND pa.start_hour <= $2
+        AND pa.end_hour >= $3
+    `;
 
-    return users;
+    if (params.clubId) {
+      sql += ` AND (pa.club_id IS NULL OR pa.club_id = $${idx})`;
+      values.push(params.clubId);
+      idx++;
+    }
+
+    if (params.levelMin != null) {
+      sql += ` AND p.level >= $${idx}`;
+      values.push(params.levelMin);
+      idx++;
+    }
+
+    if (params.levelMax != null) {
+      sql += ` AND p.level <= $${idx}`;
+      values.push(params.levelMax);
+      idx++;
+    }
+
+    if (params.excludeUserIds?.length) {
+      sql += ` AND p.user_id <> ALL($${idx}::uuid[])`;
+      values.push(params.excludeUserIds);
+    }
+
+    sql += ` ORDER BY p.level ASC LIMIT 20`;
+
+    const result = await this.db.query(sql, values);
+    return result.rows;
   }
 
-  // ─── Helpers ───
-
-  private validateNoOverlaps(
-    slots: Array<{ dayOfWeek: number; startHour: number; endHour: number }>,
-  ) {
+  private validateNoOverlaps(slots: AvailabilitySlot[]) {
     for (let i = 0; i < slots.length; i++) {
       for (let j = i + 1; j < slots.length; j++) {
         if (
@@ -208,15 +210,7 @@ export class AvailabilityService {
   }
 
   private getDayName(day: number): string {
-    const days = [
-      'Domingo',
-      'Lunes',
-      'Martes',
-      'Miércoles',
-      'Jueves',
-      'Viernes',
-      'Sábado',
-    ];
+    const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
     return days[day] || `día ${day}`;
   }
 }

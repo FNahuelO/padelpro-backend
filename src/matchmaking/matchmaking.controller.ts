@@ -10,6 +10,7 @@ import { MatchmakingService } from './matchmaking.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateMatchRequestDto } from './dto/create-match-request.dto';
+import { RunMatchmakingDto } from './dto/run-matchmaking.dto';
 
 @Controller('match-requests')
 @UseGuards(JwtAuthGuard)
@@ -31,8 +32,9 @@ export class MatchmakingController {
   async runMatchmaking(
     @CurrentUser() user: any,
     @Param('id') id: string,
+    @Body() dto: RunMatchmakingDto,
   ) {
-    return this.matchmakingService.runMatchmaking(id, user.sub);
+    return this.matchmakingService.runMatchmaking(id, user.sub, dto.invites);
   }
 
   @Get('me')
