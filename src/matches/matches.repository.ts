@@ -51,12 +51,21 @@ export class MatchesRepository {
               p.level,
               p.rating,
               p.photo_url,
-              mp.status AS player_status
+              mp.status AS player_status,
+              mp.slot_order
        FROM match_players mp
        INNER JOIN players p ON p.id = mp.player_id
        INNER JOIN users u ON u.id = p.user_id
        WHERE mp.match_id = $1 AND mp.status IN ('JOINED', 'CONFIRMED')
-       ORDER BY mp.created_at ASC`,
+       ORDER BY COALESCE(mp.slot_order, 999), mp.created_at ASC`,
+      [matchId],
+    );
+
+    const guests = await this.db.query(
+      `SELECT id, name, role, slot_order, sponsor_user_id
+       FROM match_guests
+       WHERE match_id = $1
+       ORDER BY slot_order ASC, created_at ASC`,
       [matchId],
     );
 
@@ -121,7 +130,7 @@ export class MatchesRepository {
       }));
     }
 
-    const joinedCount = players.rows.length;
+    const joinedCount = players.rows.length + guests.rows.length;
     const row = resultRow.rows[0];
     const disputedAt = match.disputed_at ?? null;
     const rivalReviewDeadline = match.rival_review_deadline_at ?? null;
@@ -149,6 +158,14 @@ export class MatchesRepository {
         skillScore: ratingToSkillScore(resolvePlayerRating(p)),
         photo: p.photo_url,
         status: p.player_status,
+        slotOrder: p.slot_order != null ? Number(p.slot_order) : undefined,
+      })),
+      guest_invites: guests.rows.map((guest) => ({
+        id: guest.id,
+        name: guest.name,
+        role: guest.role,
+        slotOrder: Number(guest.slot_order),
+        sponsorUserId: guest.sponsor_user_id,
       })),
       result: row
         ? {
@@ -161,7 +178,7 @@ export class MatchesRepository {
             submittedByName: row.submitted_by_name,
             confirmations,
             rejections,
-            requiredConfirmations: joinedCount,
+            requiredConfirmations: players.rows.length,
             confirmed:
               row.result_status === 'confirmed' || row.confirmed === true,
             proposedAt: row.proposed_at,
@@ -175,7 +192,11 @@ export class MatchesRepository {
   async listOpen() {
     const result = await this.db.query(
       `SELECT m.*,
-        (SELECT COUNT(*)::int FROM match_players mp WHERE mp.match_id = m.id AND mp.status IN ('JOINED','CONFIRMED')) AS joined_count
+        (
+          (SELECT COUNT(*)::int FROM match_players mp WHERE mp.match_id = m.id AND mp.status IN ('JOINED','CONFIRMED'))
+          +
+          (SELECT COUNT(*)::int FROM match_guests mg WHERE mg.match_id = m.id)
+        ) AS joined_count
        FROM matches m
        WHERE m.status IN ('OPEN', 'FULL', 'CONFIRMED')
        ORDER BY m.date ASC`,
@@ -186,7 +207,11 @@ export class MatchesRepository {
   async listByUser(userId: string) {
     const result = await this.db.query(
       `SELECT m.*,
-        (SELECT COUNT(*)::int FROM match_players mp2 WHERE mp2.match_id = m.id AND mp2.status IN ('JOINED','CONFIRMED')) AS joined_count
+        (
+          (SELECT COUNT(*)::int FROM match_players mp2 WHERE mp2.match_id = m.id AND mp2.status IN ('JOINED','CONFIRMED'))
+          +
+          (SELECT COUNT(*)::int FROM match_guests mg WHERE mg.match_id = m.id)
+        ) AS joined_count
        FROM matches m
        INNER JOIN players p ON p.user_id = $1
        INNER JOIN match_players mp ON mp.player_id = p.id AND mp.match_id = m.id
@@ -208,14 +233,86 @@ export class MatchesRepository {
     return ratingToSkillScore(resolvePlayerRating(result.rows[0]));
   }
 
-  async join(matchId: string, playerId: string, status: 'JOINED' | 'CONFIRMED' = 'JOINED') {
+  async join(
+    matchId: string,
+    playerId: string,
+    status: 'JOINED' | 'CONFIRMED' = 'JOINED',
+    slotOrder?: number,
+  ) {
     await this.db.query(
-      `INSERT INTO match_players (match_id, player_id, status)
-       VALUES ($1, $2, $3)
+      `INSERT INTO match_players (match_id, player_id, status, slot_order)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (match_id, player_id)
-       DO UPDATE SET status = EXCLUDED.status`,
-      [matchId, playerId, status],
+       DO UPDATE SET status = EXCLUDED.status,
+                     slot_order = COALESCE(EXCLUDED.slot_order, match_players.slot_order)`,
+      [matchId, playerId, status, slotOrder ?? null],
     );
+  }
+
+  async addGuestInvite(input: {
+    matchId: string;
+    name: string;
+    role: 'partner' | 'opponent';
+    slotOrder: number;
+    invitedByUserId: string;
+    sponsorUserId: string;
+  }) {
+    const result = await this.db.query(
+      `INSERT INTO match_guests (match_id, name, role, slot_order, invited_by_user_id, sponsor_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        input.matchId,
+        input.name,
+        input.role,
+        input.slotOrder,
+        input.invitedByUserId,
+        input.sponsorUserId,
+      ],
+    );
+    return result.rows[0];
+  }
+
+  async listGuestInvites(matchId: string) {
+    const result = await this.db.query(
+      `SELECT * FROM match_guests WHERE match_id = $1 ORDER BY slot_order ASC, created_at ASC`,
+      [matchId],
+    );
+    return result.rows;
+  }
+
+  async countGuestInvites(matchId: string) {
+    const result = await this.db.query(
+      `SELECT COUNT(*)::int AS count FROM match_guests WHERE match_id = $1`,
+      [matchId],
+    );
+    return result.rows[0].count as number;
+  }
+
+  async getTakenSlotOrders(matchId: string): Promise<number[]> {
+    const result = await this.db.query(
+      `SELECT slot_order
+       FROM match_players
+       WHERE match_id = $1 AND status IN ('JOINED', 'CONFIRMED') AND slot_order IS NOT NULL
+       UNION
+       SELECT slot_order
+       FROM match_guests
+       WHERE match_id = $1
+       ORDER BY slot_order ASC`,
+      [matchId],
+    );
+    return result.rows.map((row) => Number(row.slot_order));
+  }
+
+  async getNextAvailableSlotOrder(matchId: string): Promise<number | null> {
+    const match = await this.getById(matchId);
+    if (!match) return null;
+    const taken = new Set(await this.getTakenSlotOrders(matchId));
+    const totalSlots = Number(match.needed_players) || 4;
+    for (let slot = 1; slot <= totalSlots; slot += 1) {
+      if (!taken.has(slot)) return slot;
+    }
+    return null;
   }
 
   async confirmPlayer(matchId: string, playerId: string) {
@@ -240,7 +337,8 @@ export class MatchesRepository {
        WHERE match_id = $1 AND status IN ('JOINED', 'CONFIRMED')`,
       [matchId],
     );
-    return result.rows[0].count as number;
+    const guestCount = await this.countGuestInvites(matchId);
+    return (result.rows[0].count as number) + guestCount;
   }
 
   async countConfirmedPlayers(matchId: string) {
@@ -248,7 +346,8 @@ export class MatchesRepository {
       `SELECT COUNT(*)::int AS count FROM match_players WHERE match_id = $1 AND status = 'CONFIRMED'`,
       [matchId],
     );
-    return result.rows[0].count as number;
+    const guestCount = await this.countGuestInvites(matchId);
+    return (result.rows[0].count as number) + guestCount;
   }
 
   updateStatus(matchId: string, status: string) {
@@ -281,11 +380,11 @@ export class MatchesRepository {
       `SELECT p.user_id,
               p.level,
               p.rating,
-              ROW_NUMBER() OVER (ORDER BY mp.created_at) AS rnk
+              COALESCE(mp.slot_order, ROW_NUMBER() OVER (ORDER BY mp.created_at)) AS rnk
        FROM match_players mp
        INNER JOIN players p ON p.id = mp.player_id
        WHERE mp.match_id = $1 AND mp.status IN ('JOINED', 'CONFIRMED')
-       ORDER BY mp.created_at ASC`,
+       ORDER BY COALESCE(mp.slot_order, 999), mp.created_at ASC`,
       [matchId],
     );
     return result.rows.map((row) => ({

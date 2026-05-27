@@ -15,6 +15,7 @@ export type DepositRow = {
   status: string;
   checkout_url: string | null;
   paid_at: Date | null;
+  covered_guest_slots: number;
 };
 
 @Injectable()
@@ -83,12 +84,13 @@ export class PaymentsRepository {
     externalReference: string;
     checkoutUrl?: string | null;
     providerPreferenceId?: string | null;
+    coveredGuestSlots?: number;
   }) {
     const res = await this.db.query(
       `INSERT INTO match_deposits (
          match_id, player_id, user_id, amount, currency, provider,
-         external_reference, checkout_url, provider_preference_id, status
-       ) VALUES ($1, $2, $3, $4, $5, $6::payment_provider, $7, $8, $9, 'PENDING')
+         external_reference, checkout_url, provider_preference_id, status, covered_guest_slots
+       ) VALUES ($1, $2, $3, $4, $5, $6::payment_provider, $7, $8, $9, 'PENDING', $10)
        ON CONFLICT (match_id, player_id)
        DO UPDATE SET
          amount = EXCLUDED.amount,
@@ -97,6 +99,7 @@ export class PaymentsRepository {
          external_reference = EXCLUDED.external_reference,
          checkout_url = COALESCE(EXCLUDED.checkout_url, match_deposits.checkout_url),
          provider_preference_id = COALESCE(EXCLUDED.provider_preference_id, match_deposits.provider_preference_id),
+         covered_guest_slots = EXCLUDED.covered_guest_slots,
          status = CASE
            WHEN match_deposits.status = 'APPROVED' THEN match_deposits.status
            ELSE 'PENDING'
@@ -113,6 +116,7 @@ export class PaymentsRepository {
         input.externalReference,
         input.checkoutUrl ?? null,
         input.providerPreferenceId ?? null,
+        input.coveredGuestSlots ?? 0,
       ],
     );
     return res.rows[0] as DepositRow;

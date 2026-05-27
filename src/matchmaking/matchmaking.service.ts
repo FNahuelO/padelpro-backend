@@ -87,11 +87,11 @@ export class MatchmakingService {
       throw new BadRequestException('Esta solicitud ya fue procesada');
     }
 
-    const { orderedPlayerIds, invitedUserIds } = await this.matchesService.resolveInvites(
+    const { playerInvites, guestInvites, invitedUserIds } = await this.matchesService.resolveInvites(
       userId,
       invites,
     );
-    const slotsToFill = 3 - orderedPlayerIds.length;
+    const slotsToFill = 3 - playerInvites.length - guestInvites.length;
     if (slotsToFill < 0) {
       throw new BadRequestException('Solo podés invitar hasta 3 jugadores (1 compañero y 2 rivales)');
     }
@@ -152,12 +152,23 @@ export class MatchmakingService {
       throw new BadRequestException('Completá tu perfil de jugador antes de buscar partido');
     }
 
-    await this.matchesRepository.join(match.id, creatorPlayerId, 'CONFIRMED');
-    for (const playerId of orderedPlayerIds) {
-      await this.matchesRepository.join(match.id, playerId, 'JOINED');
+    await this.matchesRepository.join(match.id, creatorPlayerId, 'CONFIRMED', 1);
+    for (const invite of playerInvites) {
+      await this.matchesRepository.join(match.id, invite.playerId, 'JOINED', invite.slotOrder);
+    }
+    for (const guest of guestInvites) {
+      await this.matchesRepository.addGuestInvite({
+        matchId: match.id,
+        name: guest.name,
+        role: guest.role,
+        slotOrder: guest.slotOrder,
+        invitedByUserId: userId,
+        sponsorUserId: userId,
+      });
     }
     for (const player of autoSelected) {
-      await this.matchesRepository.join(match.id, player.player_id, 'JOINED');
+      const slotOrder = await this.matchesRepository.getNextAvailableSlotOrder(match.id);
+      await this.matchesRepository.join(match.id, player.player_id, 'JOINED', slotOrder ?? undefined);
     }
 
     await this.matchesRepository.createMatchChatIfMissing(match.id);

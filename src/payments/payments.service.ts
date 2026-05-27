@@ -103,6 +103,18 @@ export class PaymentsService {
     const { amount, required, currency } = await this.resolveDepositAmount(match);
     const deposit = await this.paymentsRepo.getDepositByMatchPlayer(matchId, playerId);
     const allDeposits = await this.paymentsRepo.listDepositsForMatch(matchId);
+    const coveredGuests = (await this.matchesRepo.listGuestInvites(matchId))
+      .filter((guest: any) => guest.sponsor_user_id === userId)
+      .map((guest: any) => ({
+        id: guest.id,
+        name: String(guest.name),
+      }));
+    const coveredGuestSlots =
+      deposit?.covered_guest_slots != null
+        ? Number(deposit.covered_guest_slots)
+        : coveredGuests.length;
+    const totalAmount =
+      deposit?.amount != null ? Number(deposit.amount) : amount * Math.max(1, coveredGuestSlots + 1);
 
     let clubName: string | undefined;
     if (match.club_id) {
@@ -113,19 +125,22 @@ export class PaymentsService {
     return {
       matchId,
       required,
-      amount,
+      amount: Math.round(totalAmount * 100) / 100,
       currency,
       clubName,
       provider: this.isMockMode() ? 'MOCK' : 'MERCADOPAGO',
       paid: deposit?.status === 'APPROVED',
       depositStatus: deposit?.status ?? null,
       checkoutUrl: deposit?.checkout_url ?? null,
+      coveredGuestSlots,
+      coveredGuests,
       players: allDeposits.map((d: any) => ({
         userId: d.user_id,
         userName: d.user_name,
         amount: Number(d.amount),
         status: d.status,
         paidAt: d.paid_at,
+        coveredGuestSlots: Number(d.covered_guest_slots ?? 0),
       })),
     };
   }
@@ -147,6 +162,10 @@ export class PaymentsService {
     }
 
     const { amount, required, currency } = await this.resolveDepositAmount(match);
+    const coveredGuestSlots = (await this.matchesRepo.listGuestInvites(matchId)).filter(
+      (guest: any) => guest.sponsor_user_id === userId,
+    ).length;
+    const totalAmount = Math.round(amount * Math.max(1, coveredGuestSlots + 1) * 100) / 100;
     if (!required || amount <= 0) {
       await this.approveAndConfirm(matchId, playerId, userId, null);
       return {
@@ -165,6 +184,7 @@ export class PaymentsService {
         amount: Number(existing.amount),
         checkoutUrl: existing.checkout_url,
         depositId: existing.id,
+        coveredGuestSlots: Number(existing.covered_guest_slots ?? 0),
       };
     }
 
@@ -175,10 +195,11 @@ export class PaymentsService {
       matchId,
       playerId,
       userId,
-      amount,
+      amount: totalAmount,
       currency,
       provider,
       externalReference,
+      coveredGuestSlots,
     });
 
     if (this.isMockMode()) {
@@ -187,19 +208,20 @@ export class PaymentsService {
       return {
         required: true,
         paid: false,
-        amount,
+        amount: totalAmount,
         currency,
         provider: 'MOCK',
         depositId: deposit.id,
         checkoutUrl: mockUrl,
         mock: true,
+        coveredGuestSlots,
       };
     }
 
     const checkout = await this.createMercadoPagoPreference(
       externalReference,
       match,
-      amount,
+      totalAmount,
       currency,
     );
     await this.paymentsRepo.updateCheckoutUrl(deposit.id, checkout.initPoint, checkout.preferenceId);
@@ -207,12 +229,13 @@ export class PaymentsService {
     return {
       required: true,
       paid: false,
-      amount,
+      amount: totalAmount,
       currency,
       provider: 'MERCADOPAGO',
       depositId: deposit.id,
       checkoutUrl: checkout.initPoint,
       preferenceId: checkout.preferenceId,
+      coveredGuestSlots,
     };
   }
 

@@ -44,7 +44,7 @@ export class MatchesService {
 
     const playerId = await this.matchesRepository.getPlayerIdByUserId(userId);
     if (playerId) {
-      await this.matchesRepository.join(match.id, playerId, 'JOINED');
+      await this.matchesRepository.join(match.id, playerId, 'JOINED', 1);
     }
 
     await this.joinInvitedPlayers(match.id, userId, dto.invites);
@@ -93,7 +93,11 @@ export class MatchesService {
 
   async resolveInvites(creatorUserId: string, invites?: MatchInviteDto[]) {
     if (!invites?.length) {
-      return { orderedPlayerIds: [] as string[], invitedUserIds: [] as string[] };
+      return {
+        playerInvites: [] as Array<{ playerId: string; slotOrder: number }>,
+        guestInvites: [] as Array<{ name: string; role: 'partner' | 'opponent'; slotOrder: number }>,
+        invitedUserIds: [] as string[],
+      };
     }
 
     const partners = invites.filter((i) => i.role === 'partner');
@@ -106,7 +110,7 @@ export class MatchesService {
       throw new BadRequestException('Solo podés invitar dos rivales');
     }
 
-    const invitedUserIds = invites.map((i) => i.userId);
+    const invitedUserIds = invites.map((i) => i.userId).filter((value): value is string => !!value);
     if (new Set(invitedUserIds).size !== invitedUserIds.length) {
       throw new BadRequestException('No podés invitar al mismo jugador más de una vez');
     }
@@ -114,31 +118,74 @@ export class MatchesService {
       throw new BadRequestException('No podés invitarte a vos mismo');
     }
 
-    const orderedPlayerIds: string[] = [];
+    const playerInvites: Array<{ playerId: string; slotOrder: number }> = [];
+    const guestInvites: Array<{ name: string; role: 'partner' | 'opponent'; slotOrder: number }> = [];
 
-    const pushPlayerId = async (invitedUserId: string) => {
-      const invitedPlayerId = await this.matchesRepository.getPlayerIdByUserId(invitedUserId);
-      if (!invitedPlayerId) {
-        throw new BadRequestException('Uno de los jugadores invitados no tiene perfil de jugador');
+    const resolveSlotOrder = (role: 'partner' | 'opponent', opponentIndex = 0) =>
+      role === 'partner' ? 2 : 3 + opponentIndex;
+
+    const pushInvite = async (invite: MatchInviteDto, slotOrder: number) => {
+      if (invite.userId) {
+        const invitedPlayerId = await this.matchesRepository.getPlayerIdByUserId(invite.userId);
+        if (!invitedPlayerId) {
+          throw new BadRequestException('Uno de los jugadores invitados no tiene perfil de jugador');
+        }
+        playerInvites.push({ playerId: invitedPlayerId, slotOrder });
+        return;
       }
-      orderedPlayerIds.push(invitedPlayerId);
+      if (invite.guestName?.trim()) {
+        guestInvites.push({
+          name: invite.guestName.trim(),
+          role: invite.role,
+          slotOrder,
+        });
+        return;
+      }
+      throw new BadRequestException('Cada invitación debe tener un jugador o un invitado externo');
     };
 
     if (partners[0]) {
-      await pushPlayerId(partners[0].userId);
+      await pushInvite(partners[0], resolveSlotOrder('partner'));
     }
-    for (const opponent of opponents) {
-      await pushPlayerId(opponent.userId);
+    for (const [index, opponent] of opponents.entries()) {
+      await pushInvite(opponent, resolveSlotOrder('opponent', index));
     }
 
-    return { orderedPlayerIds, invitedUserIds };
+    return { playerInvites, guestInvites, invitedUserIds };
   }
 
   async joinInvitedPlayers(matchId: string, creatorUserId: string, invites?: MatchInviteDto[]) {
-    const { orderedPlayerIds } = await this.resolveInvites(creatorUserId, invites);
-    for (const playerId of orderedPlayerIds) {
-      await this.matchesRepository.join(matchId, playerId, 'JOINED');
+    const { playerInvites, guestInvites } = await this.resolveInvites(creatorUserId, invites);
+    for (const invite of playerInvites) {
+      await this.matchesRepository.join(matchId, invite.playerId, 'JOINED', invite.slotOrder);
     }
+    for (const guest of guestInvites) {
+      await this.matchesRepository.addGuestInvite({
+        matchId,
+        name: guest.name,
+        role: guest.role,
+        slotOrder: guest.slotOrder,
+        invitedByUserId: creatorUserId,
+        sponsorUserId: creatorUserId,
+      });
+    }
+  }
+
+  private async nextAvailableSlotOrder(matchId: string) {
+    const slotOrder = await this.matchesRepository.getNextAvailableSlotOrder(matchId);
+    if (slotOrder == null) {
+      throw new BadRequestException('El partido ya no tiene cupos disponibles');
+    }
+    return slotOrder;
+  }
+
+  private async joinPlayerWithNextSlot(
+    matchId: string,
+    playerId: string,
+    status: 'JOINED' | 'CONFIRMED' = 'JOINED',
+  ) {
+    const slotOrder = await this.nextAvailableSlotOrder(matchId);
+    await this.matchesRepository.join(matchId, playerId, status, slotOrder);
   }
 
   private async syncMatchCapacityStatus(matchId: string) {
@@ -162,7 +209,7 @@ export class MatchesService {
     }
 
     await this.assertPlayerLevel(userId, match);
-    await this.matchesRepository.join(matchId, playerId);
+    await this.joinPlayerWithNextSlot(matchId, playerId);
     await this.matchesRepository.createMatchChatIfMissing(matchId);
 
     const joinedCount = await this.matchesRepository.countJoinedPlayers(matchId);
