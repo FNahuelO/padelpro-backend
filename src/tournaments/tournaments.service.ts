@@ -17,7 +17,7 @@ export class TournamentsService {
     await this.assertOrganizerRole(userId);
     const result = await this.db.query(
       `INSERT INTO tournaments (club_id, name, description, category, format, gender, start_date, max_teams, price, rules, prizes, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'DRAFT')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,COALESCE($12, 'DRAFT')::tournament_status)
        RETURNING *`,
       [
         dto.clubId ?? null,
@@ -31,6 +31,7 @@ export class TournamentsService {
         dto.price ?? null,
         dto.rules ?? null,
         dto.prizes ?? null,
+        dto.status ?? null,
       ],
     );
     return result.rows[0];
@@ -132,7 +133,7 @@ export class TournamentsService {
     if (!role) {
       throw new ForbiddenException('Usuario inválido');
     }
-    if (!['CLUB_ADMIN', 'SUPER_ADMIN'].includes(role)) {
+    if (!['CLUB_ADMIN', 'ORGANIZER', 'SUPER_ADMIN'].includes(role)) {
       throw new ForbiddenException('Solo cuentas de organizador pueden realizar esta acción');
     }
   }

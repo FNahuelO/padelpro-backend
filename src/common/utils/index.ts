@@ -8,7 +8,20 @@ export {
   type ClubSubscriptionPlan,
 } from './club-plan.util';
 export { getLevelCategory, getCategoryRatingRange, ALL_CATEGORIES } from './level-category.util';
-export { levelToRating } from './player-rating.util';
+export {
+  DEFAULT_PLAYER_RATING,
+  DEFAULT_SKILL_SCORE,
+  ELO_K_FACTOR,
+  levelToRating,
+  normalizeSkillScore,
+  ratingToSkillScore,
+  resolvePlayerRating,
+  getInitialRatingForCategory,
+  PLAYER_CATEGORIES,
+  type PlayerCategory,
+  expectedScore,
+  computeEloDelta,
+} from './player-rating.util';
 export {
   COMPETITIVE_BASE_POINTS,
   COMPETITIVE_POINTS_PER_STEP,

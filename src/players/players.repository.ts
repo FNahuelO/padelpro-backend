@@ -74,6 +74,7 @@ export class PlayersRepository {
               u.name,
               p.nickname,
               p.level,
+              p.rating,
               p.photo_url,
               p.zone,
               p.city

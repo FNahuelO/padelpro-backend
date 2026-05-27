@@ -5,6 +5,7 @@ import { MatchesRepository } from '../matches/matches.repository';
 import { MatchesService } from '../matches/matches.service';
 import { MatchInviteDto } from '../matches/dto/match-invite.dto';
 import { getCategoryLevelRange, defaultLevelBand } from '../common/utils/level-range.util';
+import { ratingToSkillScore } from '../common/utils';
 
 @Injectable()
 export class MatchmakingService {
@@ -37,8 +38,8 @@ export class MatchmakingService {
     }
 
     if (levelMin == null || levelMax == null) {
-      const playerLevel = await this.matchesRepository.getPlayerLevelByUserId(userId);
-      const band = defaultLevelBand(playerLevel ?? 2.5);
+      const playerLevel = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
+      const band = defaultLevelBand(playerLevel ?? 40);
       levelMin = levelMin ?? band.min;
       levelMax = levelMax ?? band.max;
     }
@@ -67,7 +68,7 @@ export class MatchmakingService {
    */
   async runMatchmaking(matchRequestId: string, userId: string, invites?: MatchInviteDto[]) {
     const requestResult = await this.db.query(
-      `SELECT mr.*, u.name AS creator_name, p.level AS creator_level
+      `SELECT mr.*, u.name AS creator_name, p.rating AS creator_rating
        FROM match_requests mr
        INNER JOIN users u ON u.id = mr.user_id
        LEFT JOIN players p ON p.user_id = mr.user_id
@@ -96,7 +97,7 @@ export class MatchmakingService {
     }
 
     const matchDate = new Date(matchRequest.match_date);
-    let autoSelected: { player_id: string; user_id: string; level: number }[] = [];
+    let autoSelected: { player_id: string; user_id: string; skill_score: number }[] = [];
 
     if (slotsToFill > 0) {
       const candidates = await this.availabilityService.findAvailablePlayers({
@@ -115,10 +116,12 @@ export class MatchmakingService {
         );
       }
 
-      const creatorLevel = Number(matchRequest.creator_level ?? 2.5);
+      const creatorLevel = ratingToSkillScore(
+        matchRequest.creator_rating != null ? Number(matchRequest.creator_rating) : 1000,
+      );
       const sorted = [...candidates].sort(
         (a, b) =>
-          Math.abs(Number(a.level) - creatorLevel) - Math.abs(Number(b.level) - creatorLevel),
+          Math.abs(Number(a.skill_score) - creatorLevel) - Math.abs(Number(b.skill_score) - creatorLevel),
       );
       autoSelected = sorted.slice(0, slotsToFill);
     }

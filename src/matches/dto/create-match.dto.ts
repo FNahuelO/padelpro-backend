@@ -33,13 +33,15 @@ export class CreateMatchDto {
   zone?: string;
 
   @IsOptional()
-  @Min(1)
-  @Max(7)
+  @IsInt()
+  @Min(0)
+  @Max(100)
   levelMin?: number;
 
   @IsOptional()
-  @Min(1)
-  @Max(7)
+  @IsInt()
+  @Min(0)
+  @Max(100)
   levelMax?: number;
 
   @IsIn(['male', 'female', 'mixed', 'open'])

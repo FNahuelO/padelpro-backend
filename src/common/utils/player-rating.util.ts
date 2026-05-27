@@ -1,5 +1,107 @@
+export const DEFAULT_PLAYER_RATING = 1000;
+export const ELO_K_FACTOR = 24;
+export const DEFAULT_SKILL_SCORE = 40;
+export const MIN_VISIBLE_SKILL_SCORE = 0;
+export const MAX_VISIBLE_SKILL_SCORE = 100;
+
+export const PLAYER_CATEGORIES = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'] as const;
+export type PlayerCategory = (typeof PLAYER_CATEGORIES)[number];
+
+const CATEGORY_TO_INITIAL_RATING: Record<PlayerCategory, number> = {
+  '8va': 500,
+  '7ma': 700,
+  '6ta': 900,
+  '5ta': 1100,
+  '4ta': 1300,
+  '3ra': 1550,
+  '2da': 1850,
+  '1ra': 2100,
+};
+
+const RATING_SKILL_ANCHORS = [
+  { rating: 500, skill: 0 },
+  { rating: 600, skill: 16 },
+  { rating: 800, skill: 28 },
+  { rating: 1000, skill: 40 },
+  { rating: 1200, skill: 52 },
+  { rating: 1400, skill: 64 },
+  { rating: 1700, skill: 76 },
+  { rating: 2000, skill: 88 },
+  { rating: 2200, skill: 100 },
+] as const;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function interpolate(value: number, start: number, end: number, startOut: number, endOut: number) {
+  if (end === start) return startOut;
+  return startOut + ((value - start) / (end - start)) * (endOut - startOut);
+}
+
+export function normalizeSkillScore(value: number | null | undefined): number {
+  const numeric = Number(value ?? DEFAULT_SKILL_SCORE);
+  if (Number.isNaN(numeric)) return DEFAULT_SKILL_SCORE;
+  return Math.round(clamp(numeric, MIN_VISIBLE_SKILL_SCORE, MAX_VISIBLE_SKILL_SCORE));
+}
+
 /** Convierte nivel de pádel (1–7) a rating numérico para categorías. */
 export function levelToRating(level: number | null | undefined): number {
   const l = level != null ? Number(level) : 2.5;
-  return Math.round(1000 + (l - 2.5) * 80);
+  return Math.round(DEFAULT_PLAYER_RATING + (l - 2.5) * 80);
+}
+
+export function getInitialRatingForCategory(category: PlayerCategory | null | undefined): number {
+  if (!category) return DEFAULT_PLAYER_RATING;
+  return CATEGORY_TO_INITIAL_RATING[category] ?? DEFAULT_PLAYER_RATING;
+}
+
+export function ratingToSkillScore(rating: number | null | undefined): number {
+  const normalizedRating = Number(rating ?? DEFAULT_PLAYER_RATING);
+  if (Number.isNaN(normalizedRating)) return DEFAULT_SKILL_SCORE;
+
+  if (normalizedRating <= RATING_SKILL_ANCHORS[0].rating) {
+    return RATING_SKILL_ANCHORS[0].skill;
+  }
+
+  for (let i = 1; i < RATING_SKILL_ANCHORS.length; i += 1) {
+    const previous = RATING_SKILL_ANCHORS[i - 1];
+    const current = RATING_SKILL_ANCHORS[i];
+    if (normalizedRating <= current.rating) {
+      return normalizeSkillScore(
+        interpolate(
+          normalizedRating,
+          previous.rating,
+          current.rating,
+          previous.skill,
+          current.skill,
+        ),
+      );
+    }
+  }
+
+  return MAX_VISIBLE_SKILL_SCORE;
+}
+
+export function resolvePlayerRating(input: {
+  rating?: number | string | null;
+  level?: number | string | null;
+}): number {
+  if (input.rating != null && input.rating !== '') {
+    return Math.round(Number(input.rating));
+  }
+  return levelToRating(input.level != null ? Number(input.level) : null);
+}
+
+export function expectedScore(rating: number, opponentRating: number): number {
+  return 1 / (1 + 10 ** ((opponentRating - rating) / 400));
+}
+
+export function computeEloDelta(
+  rating: number,
+  opponentRating: number,
+  actualScore: number,
+  kFactor = ELO_K_FACTOR,
+): number {
+  return Math.round(kFactor * (actualScore - expectedScore(rating, opponentRating)));
 }

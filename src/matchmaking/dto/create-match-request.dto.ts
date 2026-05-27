@@ -20,10 +20,14 @@ export class CreateMatchRequestDto {
 
   @IsOptional()
   @IsInt()
+  @Min(0)
+  @Max(100)
   minRating?: number;
 
   @IsOptional()
   @IsInt()
+  @Min(0)
+  @Max(100)
   maxRating?: number;
 
   @IsOptional()

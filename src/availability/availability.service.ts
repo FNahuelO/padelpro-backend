@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
+import { ratingToSkillScore } from '../common/utils';
 
 type AvailabilitySlot = {
   dayOfWeek: number;
@@ -155,6 +156,7 @@ export class AvailabilityService {
              p.user_id,
              u.name,
              p.level,
+             p.rating,
              p.photo_url
       FROM players p
       INNER JOIN users u ON u.id = p.user_id
@@ -170,27 +172,26 @@ export class AvailabilityService {
       idx++;
     }
 
-    if (params.levelMin != null) {
-      sql += ` AND p.level >= $${idx}`;
-      values.push(params.levelMin);
-      idx++;
-    }
-
-    if (params.levelMax != null) {
-      sql += ` AND p.level <= $${idx}`;
-      values.push(params.levelMax);
-      idx++;
-    }
-
     if (params.excludeUserIds?.length) {
       sql += ` AND p.user_id <> ALL($${idx}::uuid[])`;
       values.push(params.excludeUserIds);
     }
 
-    sql += ` ORDER BY p.level ASC LIMIT 20`;
+    sql += ` ORDER BY p.rating ASC NULLS LAST LIMIT 20`;
 
     const result = await this.db.query(sql, values);
-    return result.rows;
+    return result.rows
+      .map((row) => ({
+        ...row,
+        skill_score: ratingToSkillScore(
+          row.rating != null ? Number(row.rating) : row.level != null ? Number(row.level) : null,
+        ),
+      }))
+      .filter((row) => {
+        if (params.levelMin != null && row.skill_score < params.levelMin) return false;
+        if (params.levelMax != null && row.skill_score > params.levelMax) return false;
+        return true;
+      });
   }
 
   private validateNoOverlaps(slots: AvailabilitySlot[]) {

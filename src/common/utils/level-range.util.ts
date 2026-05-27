@@ -1,28 +1,30 @@
-/** Rango de nivel de pádel (1–7) por categoría competitiva. */
+/** Rango visible de skill (0–100) por categoría competitiva. */
 export function getCategoryLevelRange(category: string): { min: number; max: number } {
   switch (category) {
     case '1ra':
-      return { min: 6, max: 7 };
+      return { min: 88, max: 100 };
     case '2da':
-      return { min: 5.5, max: 6.5 };
+      return { min: 76, max: 87 };
     case '3ra':
-      return { min: 5, max: 6 };
+      return { min: 64, max: 75 };
     case '4ta':
-      return { min: 4, max: 5.5 };
+      return { min: 52, max: 63 };
     case '5ta':
-      return { min: 3, max: 4.5 };
+      return { min: 40, max: 51 };
     case '6ta':
-      return { min: 2, max: 3.5 };
+      return { min: 28, max: 39 };
     case '7ma':
-      return { min: 1, max: 2.5 };
+      return { min: 16, max: 27 };
+    case '8va':
+      return { min: 0, max: 15 };
     default:
-      return { min: 1, max: 7 };
+      return { min: 0, max: 100 };
   }
 }
 
-export function defaultLevelBand(level: number, margin = 0.5): { min: number; max: number } {
+export function defaultLevelBand(level: number, margin = 10): { min: number; max: number } {
   return {
-    min: Math.max(1, Math.round((level - margin) * 10) / 10),
-    max: Math.min(7, Math.round((level + margin) * 10) / 10),
+    min: Math.max(0, Math.round(level - margin)),
+    max: Math.min(100, Math.round(level + margin)),
   };
 }

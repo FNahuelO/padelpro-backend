@@ -4,6 +4,7 @@ import { CreateMatchDto } from './dto/create-match.dto';
 import type { ParsedBestOfThree } from '../common/utils/match-result.util';
 import type { PlayerRatingDto } from './dto/player-rating.dto';
 import { userTeamFromRank } from '../common/utils/match-result.util';
+import { ratingToSkillScore, resolvePlayerRating } from '../common/utils';
 
 export const RESULT_CONFIRM_HOURS = 48;
 
@@ -48,6 +49,7 @@ export class MatchesRepository {
               p.user_id,
               u.name,
               p.level,
+              p.rating,
               p.photo_url,
               mp.status AS player_status
        FROM match_players mp
@@ -142,7 +144,9 @@ export class MatchesRepository {
         id: p.user_id,
         playerId: p.id,
         name: p.name,
-        level: Number(p.level),
+        level: p.level != null ? Number(p.level) : null,
+        rating: p.rating != null ? Number(p.rating) : null,
+        skillScore: ratingToSkillScore(resolvePlayerRating(p)),
         photo: p.photo_url,
         status: p.player_status,
       })),
@@ -198,9 +202,10 @@ export class MatchesRepository {
     return result.rows[0]?.id ?? null;
   }
 
-  async getPlayerLevelByUserId(userId: string) {
-    const result = await this.db.query(`SELECT level FROM players WHERE user_id = $1`, [userId]);
-    return result.rows[0]?.level != null ? Number(result.rows[0].level) : null;
+  async getPlayerSkillScoreByUserId(userId: string) {
+    const result = await this.db.query(`SELECT level, rating FROM players WHERE user_id = $1`, [userId]);
+    if (!result.rows[0]) return null;
+    return ratingToSkillScore(resolvePlayerRating(result.rows[0]));
   }
 
   async join(matchId: string, playerId: string, status: 'JOINED' | 'CONFIRMED' = 'JOINED') {
@@ -269,6 +274,26 @@ export class MatchesRepository {
       [matchId],
     );
     return result.rows.map((r) => r.user_id as string);
+  }
+
+  async getParticipantsForRating(matchId: string) {
+    const result = await this.db.query(
+      `SELECT p.user_id,
+              p.level,
+              p.rating,
+              ROW_NUMBER() OVER (ORDER BY mp.created_at) AS rnk
+       FROM match_players mp
+       INNER JOIN players p ON p.id = mp.player_id
+       WHERE mp.match_id = $1 AND mp.status IN ('JOINED', 'CONFIRMED')
+       ORDER BY mp.created_at ASC`,
+      [matchId],
+    );
+    return result.rows.map((row) => ({
+      userId: row.user_id as string,
+      level: row.level != null ? Number(row.level) : null,
+      rating: row.rating != null ? Number(row.rating) : null,
+      rank: Number(row.rnk),
+    }));
   }
 
   async proposeResult(matchId: string, userId: string, parsed: ParsedBestOfThree) {
@@ -459,6 +484,41 @@ export class MatchesRepository {
          ON CONFLICT (match_id, rater_user_id, rated_user_id)
          DO UPDATE SET score = EXCLUDED.score, comment = EXCLUDED.comment`,
         [matchId, raterUserId, rating.userId, rating.score, rating.comment ?? null],
+      );
+    }
+  }
+
+  async hasRatingHistory(matchId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `SELECT 1
+       FROM player_rating_history
+       WHERE match_id = $1
+       LIMIT 1`,
+      [matchId],
+    );
+    return !!result.rows[0];
+  }
+
+  async savePlayerRatingHistory(
+    matchId: string,
+    changes: Array<{ userId: string; ratingBefore: number; ratingAfter: number; delta: number }>,
+  ) {
+    for (const change of changes) {
+      await this.db.query(
+        `UPDATE players
+         SET rating = $2, updated_at = NOW()
+         WHERE user_id = $1`,
+        [change.userId, change.ratingAfter],
+      );
+      await this.db.query(
+        `INSERT INTO player_rating_history (user_id, match_id, rating_before, rating_after, delta)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (user_id, match_id)
+         DO UPDATE SET
+           rating_before = EXCLUDED.rating_before,
+           rating_after = EXCLUDED.rating_after,
+           delta = EXCLUDED.delta`,
+        [change.userId, matchId, change.ratingBefore, change.ratingAfter, change.delta],
       );
     }
   }

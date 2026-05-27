@@ -12,7 +12,13 @@ import { PlayerRatingDto } from './dto/player-rating.dto';
 import { UpdateMatchStatusDto } from './dto/update-match-status.dto';
 import { MatchesRepository } from './matches.repository';
 import { PaymentsService } from '../payments/payments.service';
+import { computeEloDelta, resolvePlayerRating } from '../common/utils';
 import { parseBestOfThreeSets } from '../common/utils/match-result.util';
+
+function userTeamFromRank(rnk: number, neededPlayers: number): 'A' | 'B' {
+  const half = Math.ceil(Math.max(neededPlayers, 2) / 2);
+  return rnk <= half ? 'A' : 'B';
+}
 
 @Injectable()
 export class MatchesService {
@@ -27,8 +33,8 @@ export class MatchesService {
 
   async create(userId: string, dto: CreateMatchDto) {
     if (dto.levelMin == null || dto.levelMax == null) {
-      const level = await this.matchesRepository.getPlayerLevelByUserId(userId);
-      const band = defaultLevelBand(level ?? 2.5);
+      const level = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
+      const band = defaultLevelBand(level ?? 40);
       dto.levelMin = dto.levelMin ?? band.min;
       dto.levelMax = dto.levelMax ?? band.max;
     }
@@ -71,17 +77,17 @@ export class MatchesService {
   }
 
   private async assertPlayerLevel(userId: string, match: { level_min?: number | null; level_max?: number | null }) {
-    const level = await this.matchesRepository.getPlayerLevelByUserId(userId);
+    const level = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
     if (level == null) return;
 
     const min = match.level_min != null ? Number(match.level_min) : null;
     const max = match.level_max != null ? Number(match.level_max) : null;
 
     if (min != null && level < min) {
-      throw new BadRequestException(`Tu nivel (${level}) está por debajo del mínimo del partido (${min})`);
+      throw new BadRequestException(`Tu nivel (${level}/100) está por debajo del mínimo del partido (${min}/100)`);
     }
     if (max != null && level > max) {
-      throw new BadRequestException(`Tu nivel (${level}) supera el máximo del partido (${max})`);
+      throw new BadRequestException(`Tu nivel (${level}/100) supera el máximo del partido (${max}/100)`);
     }
   }
 
@@ -379,9 +385,56 @@ export class MatchesService {
     const winnerTeam = finalized.rows[0]?.winner_team as string;
     await this.clubPointsService.awardForFinishedMatch(matchId, winnerTeam);
     await this.competitiveScoringService.awardForFinishedMatch(matchId);
+    await this.applyMatchRatings(matchId, winnerTeam);
     const detail = await this.findOne(matchId);
     this.realtimeGateway.emitMatchUpdated(detail);
     return true;
+  }
+
+  private async applyMatchRatings(matchId: string, winnerTeam: string | null | undefined) {
+    if (await this.matchesRepository.hasRatingHistory(matchId)) {
+      return;
+    }
+
+    const match = await this.matchesRepository.getById(matchId);
+    if (!match) return;
+
+    const participants = await this.matchesRepository.getParticipantsForRating(matchId);
+    if (participants.length < 2) {
+      return;
+    }
+
+    const neededPlayers = Number(match.needed_players) || participants.length;
+    const teamA = participants.filter((player) => userTeamFromRank(player.rank, neededPlayers) === 'A');
+    const teamB = participants.filter((player) => userTeamFromRank(player.rank, neededPlayers) === 'B');
+    if (teamA.length === 0 || teamB.length === 0) {
+      return;
+    }
+
+    const averageRating = (team: typeof participants) =>
+      team.reduce((sum, player) => sum + resolvePlayerRating(player), 0) / team.length;
+
+    const teamARating = averageRating(teamA);
+    const teamBRating = averageRating(teamB);
+    const normalizedWinner = String(winnerTeam || '').toUpperCase().trim();
+    const actualScoreA =
+      normalizedWinner === 'A' ? 1 : normalizedWinner === 'B' ? 0 : 0.5;
+    const deltaA = computeEloDelta(teamARating, teamBRating, actualScoreA);
+    const deltaB = -deltaA;
+
+    const changes = participants.map((player) => {
+      const ratingBefore = resolvePlayerRating(player);
+      const delta =
+        userTeamFromRank(player.rank, neededPlayers) === 'A' ? deltaA : deltaB;
+      return {
+        userId: player.userId,
+        ratingBefore,
+        ratingAfter: Math.max(100, ratingBefore + delta),
+        delta,
+      };
+    });
+
+    await this.matchesRepository.savePlayerRatingHistory(matchId, changes);
   }
 
   private async saveOptionalPlayerRatings(

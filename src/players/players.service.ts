@@ -1,4 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { getLevelCategory, resolvePlayerRating } from '../common/utils';
+import { ratingToSkillScore } from '../common/utils/player-rating.util';
 import { UsersService } from '../users/users.service';
 import { UpdatePlayerDto } from './dto/update-player.dto';
 import { PlayersRepository } from './players.repository';
@@ -10,8 +12,26 @@ export class PlayersService {
     private readonly usersService: UsersService,
   ) {}
 
+  private normalizePlayer<T extends Record<string, any> | null>(player: T): T {
+    if (!player) return player;
+    const rating = resolvePlayerRating(player);
+    const extras =
+      player.extras && typeof player.extras === 'object' && !Array.isArray(player.extras)
+        ? player.extras
+        : {};
+    return {
+      ...player,
+      rating,
+      skillScore: ratingToSkillScore(rating),
+      level: player.level != null ? Number(player.level) : null,
+      levelCategory: player.levelCategory ?? player.level_category ?? getLevelCategory(rating),
+      declaredCategory:
+        typeof extras.declaredCategory === 'string' ? extras.declaredCategory : undefined,
+    };
+  }
+
   async getMe(userId: string) {
-    const player = await this.playersRepository.getByUserId(userId);
+    const player = this.normalizePlayer(await this.playersRepository.getByUserId(userId));
     if (!player) {
       throw new NotFoundException('Perfil de jugador no encontrado');
     }
@@ -19,17 +39,17 @@ export class PlayersService {
   }
 
   updateMe(userId: string, dto: UpdatePlayerDto) {
-    return this.playersRepository.updateMe(userId, dto);
+    return this.playersRepository.updateMe(userId, dto).then((player) => this.normalizePlayer(player));
   }
 
   list() {
-    return this.playersRepository.listPlayers();
+    return this.playersRepository.listPlayers().then((players) => players.map((player) => this.normalizePlayer(player)));
   }
 
   async getById(playerId: string) {
-    let player = await this.playersRepository.getById(playerId);
+    let player = this.normalizePlayer(await this.playersRepository.getById(playerId));
     if (!player) {
-      player = await this.playersRepository.getByUserId(playerId);
+      player = this.normalizePlayer(await this.playersRepository.getByUserId(playerId));
     }
     if (!player) {
       throw new NotFoundException('Jugador no encontrado');
@@ -49,11 +69,11 @@ export class PlayersService {
     }
     const result = await this.playersRepository.searchPlayers(q, excludeUserId);
     return result.rows.map((row) => ({
+      ...this.normalizePlayer(row),
       id: row.id,
       userId: row.user_id,
       name: row.name,
       nickname: row.nickname,
-      level: row.level != null ? Number(row.level) : null,
       photo: row.photo_url,
       zone: row.zone,
       city: row.city,

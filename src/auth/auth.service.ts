@@ -1,9 +1,16 @@
-import { ConflictException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
+import { getLevelCategory, ratingToSkillScore, resolvePlayerRating } from '../common/utils';
 import { AuthRepository } from './auth.repository';
-import { LoginDto, RegisterDto } from './dto';
+import { ChangePasswordDto, LoginDto, RegisterDto } from './dto';
 
 @Injectable()
 export class AuthService {
@@ -28,12 +35,16 @@ export class AuthService {
       role: dto.role || 'PLAYER',
     });
 
-    await this.authRepository.createPlayerForUser(user.id);
+    await this.authRepository.createPlayerForUser(user.id, {
+      declaredCategory: dto.declaredCategory ?? null,
+    });
+
+    const fullUser = await this.authRepository.findMe(user.id);
 
     const token = this.generateToken(user.id, user.email);
     return {
       access_token: token,
-      user,
+      user: this.serializeAuthUser(fullUser ?? user),
     };
   }
 
@@ -48,15 +59,11 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
+    const fullUser = await this.authRepository.findMe(user.id);
     const token = this.generateToken(user.id, user.email);
     return {
       access_token: token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
+      user: this.serializeAuthUser(fullUser ?? user),
     };
   }
 
@@ -65,7 +72,27 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('Usuario no encontrado');
     }
-    return user;
+    return this.serializeAuthUser(user);
+  }
+
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const user = await this.authRepository.findById(userId);
+    if (!user) {
+      throw new UnauthorizedException('Usuario no encontrado');
+    }
+
+    const isPasswordValid = await bcrypt.compare(dto.currentPassword, user.password_hash);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('La contraseña actual no es correcta');
+    }
+
+    if (dto.currentPassword === dto.newPassword) {
+      throw new BadRequestException('La nueva contraseña debe ser distinta de la actual');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 10);
+    await this.authRepository.updatePassword(userId, passwordHash);
+    return { ok: true };
   }
 
   private generateToken(userId: string, email: string): string {
@@ -78,5 +105,26 @@ export class AuthService {
 
   private fingerprint(token: string): string {
     return createHash('sha256').update(token).digest('hex').slice(0, 12);
+  }
+
+  private serializeAuthUser(user: any) {
+    const extras =
+      user?.extras && typeof user.extras === 'object' && !Array.isArray(user.extras)
+        ? user.extras
+        : {};
+    const rating = resolvePlayerRating(user ?? {});
+
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      photo: user.photo_url ?? undefined,
+      rating,
+      skillScore: ratingToSkillScore(rating),
+      levelCategory: getLevelCategory(rating),
+      declaredCategory:
+        typeof extras.declaredCategory === 'string' ? extras.declaredCategory : undefined,
+    };
   }
 }

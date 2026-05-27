@@ -8,7 +8,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { v2 as cloudinary } from 'cloudinary';
 import { getLevelCategory, getMonthKey } from '../common/utils';
-import { levelToRating } from '../common/utils/player-rating.util';
+import { ratingToSkillScore, resolvePlayerRating } from '../common/utils/player-rating.util';
 
 type Extras = Record<string, unknown>;
 
@@ -67,7 +67,7 @@ export class UsersService {
   async getProfile(userId: string) {
     const res = await this.db.query(
       `SELECT u.id, u.name, u.email, u.role,
-              p.id AS player_id, p.photo_url, p.city, p.zone, p.level, p.position, p.bio, p.nickname,
+              p.id AS player_id, p.photo_url, p.city, p.zone, p.level, p.rating, p.position, p.bio, p.nickname,
               p.extras
        FROM users u
        LEFT JOIN players p ON p.user_id = u.id
@@ -81,6 +81,8 @@ export class UsersService {
 
     const extras = this.parseExtras(row);
     const prefs = (extras.preferences as Extras) || {};
+    const currentRating = resolvePlayerRating(row);
+    const currentSkillScore = ratingToSkillScore(currentRating);
 
     const matchStats = await this.getMatchStats(userId);
     const monthKey = getMonthKey();
@@ -122,8 +124,10 @@ export class UsersService {
       description: row.bio || '',
       photo: row.photo_url ?? undefined,
       location,
-      rating: levelToRating(row.level),
-      levelCategory: getLevelCategory(levelToRating(row.level)),
+      rating: currentRating,
+      skillScore: currentSkillScore,
+      levelCategory: getLevelCategory(currentRating),
+      declaredCategory: (extras.declaredCategory as string) || undefined,
       mainClubId,
       mainClub,
       weeklyRankPosition: null,
@@ -154,10 +158,34 @@ export class UsersService {
       slice = ordered.slice(-limit);
     }
 
-    const levelRes = await this.db.query(`SELECT level FROM players WHERE user_id = $1`, [
+    const levelRes = await this.db.query(`SELECT level, rating FROM players WHERE user_id = $1`, [
       userId,
     ]);
-    const baseRating = levelToRating(levelRes.rows[0]?.level);
+    const baseRating = resolvePlayerRating(levelRes.rows[0] ?? {});
+    const matchIds = slice.map((m) => m.matchId);
+    const ratingHistoryRes =
+      matchIds.length > 0
+        ? await this.db.query(
+            `SELECT match_id, delta, rating_after
+             FROM player_rating_history
+             WHERE user_id = $1 AND match_id = ANY($2::uuid[])`,
+            [userId, matchIds],
+          )
+        : { rows: [] as Array<{ match_id: string; delta: number; rating_after: number }> };
+    const ratingHistory = new Map<
+      string,
+      { delta: number; ratingAfter: number }
+    >(
+      ratingHistoryRes.rows.map(
+        (row): [string, { delta: number; ratingAfter: number }] => [
+          row.match_id,
+          {
+            delta: Number(row.delta),
+            ratingAfter: Number(row.rating_after),
+          },
+        ],
+      ),
+    );
 
     const sumDelta = slice.reduce((acc, m) => {
       const pts = parseScore(m.score);
@@ -174,8 +202,10 @@ export class UsersService {
       if (!draw) {
         result = m.outcome === 'win' ? 'win' : 'loss';
       }
-      const ratingChange = draw ? 0 : result === 'win' ? 12 : -10;
-      r += ratingChange;
+      const legacyRatingChange = draw ? 0 : result === 'win' ? 12 : -10;
+      const storedRating = ratingHistory.get(m.matchId);
+      const ratingChange = storedRating?.delta ?? legacyRatingChange;
+      r = storedRating?.ratingAfter ?? r + ratingChange;
       return {
         matchId: m.matchId,
         date: new Date(m.date).toISOString(),

@@ -1,4 +1,4 @@
-import { IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MinLength, ValidateIf } from 'class-validator';
 
 export class RegisterDto {
   @IsEmail()
@@ -19,4 +19,8 @@ export class RegisterDto {
   @IsOptional()
   @IsIn(['PLAYER', 'CLUB_ADMIN', 'ORGANIZER'])
   role?: 'PLAYER' | 'CLUB_ADMIN' | 'ORGANIZER';
+
+  @ValidateIf((o: RegisterDto) => (o.role ?? 'PLAYER') === 'PLAYER')
+  @IsIn(['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'])
+  declaredCategory?: '8va' | '7ma' | '6ta' | '5ta' | '4ta' | '3ra' | '2da' | '1ra';
 }
