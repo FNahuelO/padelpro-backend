@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class CreateCourtSlotDto {
   @IsString()
@@ -7,13 +7,13 @@ export class CreateCourtSlotDto {
   @IsString()
   slotDate: string;
 
-  @IsInt()
-  @Min(0)
-  @Max(23)
+  @IsNumber()
+  @Min(8)
+  @Max(23.5)
   startHour: number;
 
-  @IsInt()
-  @Min(1)
+  @IsNumber()
+  @Min(8.5)
   @Max(24)
   endHour: number;
 

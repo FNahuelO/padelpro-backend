@@ -1,11 +1,20 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { isClubRole } from '../common/roles';
 import { getMonthKey } from '../common/utils';
+import { COURT_SLOT_END_AT_SQL } from '../common/utils/court-schedule.util';
 import { DatabaseService } from '../database/database.service';
 import { CreateClubDto } from './dto/create-club.dto';
 import { CreateClubPromotionDto } from './dto/create-club-promotion.dto';
 import { CreateClubRewardDto } from './dto/create-club-reward.dto';
+import { CreateShopCouponDto } from './dto/create-shop-coupon.dto';
+import { CreateShopProductDto } from './dto/create-shop-product.dto';
+import { UpdateShopProductDto } from './dto/update-shop-product.dto';
+import { UpdateClubRewardDto } from './dto/update-club-reward.dto';
+import { UpdateShopStockDto } from './dto/update-shop-stock.dto';
+
+type RankingPeriod = 'weekly' | 'monthly' | 'annual';
 import { CreateCourtSlotDto } from './dto/create-court-slot.dto';
+import { UpdateCourtSlotDto } from './dto/update-court-slot.dto';
 import { UpdateClubDto } from './dto/update-club.dto';
 
 @Injectable()
@@ -102,11 +111,42 @@ export class ClubsService {
     if (userId) {
       await this.assertClubRole(userId);
     }
+    await this.db.query(
+      `UPDATE court_availability_slots
+       SET status = 'CANCELLED'
+       WHERE club_id = $1 AND status = 'OPEN' AND ${COURT_SLOT_END_AT_SQL} < NOW()`,
+      [clubId],
+    );
     const result = await this.db.query(
       `SELECT id, club_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at
        FROM court_availability_slots
        WHERE club_id = $1 AND status <> 'CANCELLED'
        ORDER BY slot_date ASC, start_hour ASC`,
+      [clubId],
+    );
+    return result.rows;
+  }
+
+  async listClubMatches(clubId: string, userId: string) {
+    await this.assertClubRole(userId);
+    await this.findOne(clubId);
+    const result = await this.db.query(
+      `SELECT m.id,
+              m.title,
+              m.date,
+              m.status,
+              m.needed_players,
+              (
+                (SELECT COUNT(*)::int FROM match_players mp WHERE mp.match_id = m.id AND mp.status IN ('JOINED','CONFIRMED'))
+                +
+                (SELECT COUNT(*)::int FROM match_guests mg WHERE mg.match_id = m.id)
+              ) AS joined_count
+       FROM matches m
+       WHERE m.club_id = $1
+         AND m.status NOT IN ('CANCELLED', 'FINISHED')
+         AND m.date >= NOW() - INTERVAL '12 hours'
+       ORDER BY m.date ASC
+       LIMIT 40`,
       [clubId],
     );
     return result.rows;
@@ -144,6 +184,53 @@ export class ClubsService {
     return { ...slot, notifiedCount };
   }
 
+  async updateCourtSlot(userId: string, clubId: string, slotId: string, dto: UpdateCourtSlotDto) {
+    await this.assertClubRole(userId);
+    const existing = await this.db.query(
+      `SELECT id, court_label, slot_date, start_hour, end_hour
+       FROM court_availability_slots
+       WHERE id = $1 AND club_id = $2 AND status <> 'CANCELLED'`,
+      [slotId, clubId],
+    );
+    const row = existing.rows[0];
+    if (!row) {
+      throw new NotFoundException('Horario no encontrado');
+    }
+
+    const courtLabel = (dto.courtLabel ?? row.court_label).trim();
+    const slotDate = dto.slotDate ?? row.slot_date;
+    const startHour = dto.startHour ?? Number(row.start_hour);
+    const endHour = dto.endHour ?? Number(row.end_hour);
+
+    if (!courtLabel) {
+      throw new BadRequestException('Indicá el nombre o número de cancha');
+    }
+    if (startHour >= endHour) {
+      throw new BadRequestException('La hora de fin debe ser posterior a la de inicio');
+    }
+
+    const bonusPoints = await this.resolveSlotBonus(clubId, {
+      courtLabel,
+      slotDate: typeof slotDate === 'string' ? slotDate.slice(0, 10) : slotDate,
+      startHour,
+      endHour,
+      isDeadHour: dto.isDeadHour,
+    });
+
+    const result = await this.db.query(
+      `UPDATE court_availability_slots
+       SET court_label = $3,
+           slot_date = $4::date,
+           start_hour = $5,
+           end_hour = $6,
+           bonus_points = $7
+       WHERE id = $1 AND club_id = $2
+       RETURNING id, club_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at`,
+      [slotId, clubId, courtLabel, slotDate, startHour, endHour, bonusPoints],
+    );
+    return result.rows[0];
+  }
+
   async deleteCourtSlot(userId: string, clubId: string, slotId: string) {
     await this.assertClubRole(userId);
     const result = await this.db.query(
@@ -170,8 +257,8 @@ export class ClubsService {
       bonus_points?: number;
     },
   ): Promise<number> {
-    const startLabel = `${String(slot.start_hour).padStart(2, '0')}:00`;
-    const endLabel = `${String(slot.end_hour).padStart(2, '0')}:00`;
+    const startLabel = this.formatHourLabel(slot.start_hour);
+    const endLabel = this.formatHourLabel(slot.end_hour);
     const dateLabel = new Date(`${slot.slot_date}T12:00:00`).toLocaleDateString('es-AR', {
       weekday: 'long',
       day: 'numeric',
@@ -275,9 +362,219 @@ export class ClubsService {
     };
   }
 
-  async getInternalRanking(clubId: string, userId: string, monthKey?: string) {
+  async getClubImpact(clubId: string, userId: string) {
     await this.assertClubRole(userId);
-    return this.queryMonthlyLeaderboard(clubId, 20, monthKey);
+    await this.findOne(clubId);
+
+    const monthKey = getMonthKey();
+    const monthStart = `${monthKey}-01`;
+
+    const [revenue, newPlayers, activity] = await Promise.all([
+      this.db.query(
+        `SELECT
+           COALESCE((
+             SELECT SUM(md.amount)
+             FROM match_deposits md
+             INNER JOIN matches m ON m.id = md.match_id
+             WHERE m.club_id = $1
+               AND md.status = 'APPROVED'
+               AND COALESCE(md.paid_at, md.updated_at) >= $2::date
+           ), 0)::float8 AS deposits,
+           COALESCE((
+             SELECT SUM(sp.subtotal)
+             FROM shop_purchases sp
+             WHERE sp.club_id = $1
+               AND sp.status = 'CONFIRMED'
+               AND sp.created_at >= $2::date
+           ), 0)::float8 AS shop`,
+        [clubId, monthStart],
+      ),
+      this.db.query(
+        `SELECT COUNT(DISTINCT p.user_id)::int AS count
+         FROM match_players mp
+         INNER JOIN players p ON p.id = mp.player_id
+         INNER JOIN matches m ON m.id = mp.match_id
+         WHERE m.club_id = $1
+           AND m.status = 'FINISHED'
+           AND m.date >= $2::date
+           AND mp.status IN ('JOINED', 'CONFIRMED')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM match_players mp2
+             INNER JOIN matches m2 ON m2.id = mp2.match_id
+             WHERE mp2.player_id = mp.player_id
+               AND m2.club_id = $1
+               AND m2.status = 'FINISHED'
+               AND m2.date < $2::date
+               AND mp2.status IN ('JOINED', 'CONFIRMED')
+           )`,
+        [clubId, monthStart],
+      ),
+      this.db.query(
+        `SELECT
+           COUNT(DISTINCT m.id) FILTER (
+             WHERE m.status = 'FINISHED' AND m.date >= $2::date
+           )::int AS matches_finished,
+           COUNT(DISTINCT mp.player_id) FILTER (
+             WHERE m.status = 'FINISHED'
+               AND m.date >= $2::date
+               AND mp.status IN ('JOINED', 'CONFIRMED')
+           )::int AS active_players
+         FROM matches m
+         LEFT JOIN match_players mp ON mp.match_id = m.id
+         WHERE m.club_id = $1`,
+        [clubId, monthStart],
+      ),
+    ]);
+
+    const collectedDeposits = Number(revenue.rows[0]?.deposits ?? 0);
+    const collectedShop = Number(revenue.rows[0]?.shop ?? 0);
+
+    return {
+      monthKey,
+      revenueCollected: collectedDeposits + collectedShop,
+      revenueDeposits: collectedDeposits,
+      revenueShop: collectedShop,
+      newPlayers: newPlayers.rows[0]?.count ?? 0,
+      matchesFinished: activity.rows[0]?.matches_finished ?? 0,
+      activePlayers: activity.rows[0]?.active_players ?? 0,
+    };
+  }
+
+  async getInternalRanking(
+    clubId: string,
+    userId: string,
+    period: RankingPeriod = 'monthly',
+    monthKey?: string,
+    limit = 20,
+  ) {
+    await this.assertClubRole(userId);
+    const safeLimit = Math.min(50, Math.max(5, limit));
+    if (period === 'monthly') {
+      return this.queryMonthlyLeaderboard(clubId, safeLimit, monthKey);
+    }
+    return this.queryPeriodLeaderboard(clubId, period, safeLimit);
+  }
+
+  async getRevenue(clubId: string, userId: string, periodDays = 30, movementsLimit = 15) {
+    await this.assertClubRole(userId);
+    await this.findOne(clubId);
+
+    const days = Math.min(365, Math.max(0, periodDays));
+    const periodFilter = days > 0 ? `>= NOW() - ($2::int * INTERVAL '1 day')` : 'IS NOT NULL';
+    const periodParams = days > 0 ? [clubId, days] : [clubId];
+    const safeMovementsLimit = Math.min(1000, Math.max(1, movementsLimit));
+
+    const [deposits, pendingDeposits, shop, pendingShop, recentDeposits, recentShop] = await Promise.all([
+      this.db.query(
+        `SELECT COALESCE(SUM(md.amount), 0)::float8 AS total, COUNT(*)::int AS count
+         FROM match_deposits md
+         INNER JOIN matches m ON m.id = md.match_id
+         WHERE m.club_id = $1 AND md.status = 'APPROVED'
+           AND COALESCE(md.paid_at, md.updated_at) ${periodFilter}`,
+        periodParams,
+      ),
+      this.db.query(
+        `SELECT COALESCE(SUM(md.amount), 0)::float8 AS total, COUNT(*)::int AS count
+         FROM match_deposits md
+         INNER JOIN matches m ON m.id = md.match_id
+         WHERE m.club_id = $1 AND md.status = 'PENDING'
+           AND md.created_at ${periodFilter}`,
+        periodParams,
+      ),
+      this.db.query(
+        `SELECT COALESCE(SUM(sp.subtotal), 0)::float8 AS total, COUNT(*)::int AS count
+         FROM shop_purchases sp
+         WHERE sp.club_id = $1 AND sp.status = 'CONFIRMED'
+           AND sp.created_at ${periodFilter}`,
+        periodParams,
+      ),
+      this.db.query(
+        `SELECT COALESCE(SUM(sp.subtotal), 0)::float8 AS total, COUNT(*)::int AS count
+         FROM shop_purchases sp
+         WHERE sp.club_id = $1 AND sp.status = 'PENDING'
+           AND sp.created_at ${periodFilter}`,
+        periodParams,
+      ),
+      this.db.query(
+        `SELECT md.id,
+                md.amount,
+                md.status,
+                COALESCE(md.paid_at, md.updated_at) AS occurred_at,
+                u.name AS user_name,
+                m.title AS match_title
+         FROM match_deposits md
+         INNER JOIN matches m ON m.id = md.match_id
+         INNER JOIN users u ON u.id = md.user_id
+         WHERE m.club_id = $1 AND md.status IN ('APPROVED', 'PENDING')
+           AND COALESCE(md.paid_at, md.updated_at) ${periodFilter}
+         ORDER BY occurred_at DESC
+         LIMIT $${periodParams.length + 1}`,
+        [...periodParams, safeMovementsLimit],
+      ),
+      this.db.query(
+        `SELECT sp.id,
+                sp.subtotal AS amount,
+                sp.status,
+                sp.created_at AS occurred_at,
+                u.name AS user_name,
+                p.name AS product_name,
+                m.title AS match_title
+         FROM shop_purchases sp
+         INNER JOIN club_shop_products p ON p.id = sp.product_id
+         INNER JOIN users u ON u.id = sp.user_id
+         LEFT JOIN matches m ON m.id = sp.match_id
+         WHERE sp.club_id = $1 AND sp.status <> 'CANCELLED'
+           AND sp.created_at ${periodFilter}
+         ORDER BY sp.created_at DESC
+         LIMIT $${periodParams.length + 1}`,
+        [...periodParams, safeMovementsLimit],
+      ),
+    ]);
+
+    const collectedDeposits = Number(deposits.rows[0]?.total ?? 0);
+    const collectedShop = Number(shop.rows[0]?.total ?? 0);
+    const pendingDepositsTotal = Number(pendingDeposits.rows[0]?.total ?? 0);
+    const pendingShopTotal = Number(pendingShop.rows[0]?.total ?? 0);
+
+    const recent = [
+      ...recentDeposits.rows.map((row) => ({
+        id: row.id,
+        kind: 'deposit' as const,
+        label: row.match_title ? `Seña · ${row.match_title}` : 'Seña de cancha',
+        userName: row.user_name,
+        amount: Number(row.amount),
+        status: row.status,
+        occurredAt: row.occurred_at,
+      })),
+      ...recentShop.rows.map((row) => ({
+        id: row.id,
+        kind: 'shop' as const,
+        label: row.product_name,
+        userName: row.user_name,
+        amount: Number(row.amount),
+        status: row.status,
+        occurredAt: row.occurred_at,
+      })),
+    ]
+      .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
+      .slice(0, safeMovementsLimit);
+
+    return {
+      periodDays: days,
+      monthKey: getMonthKey(),
+      summary: {
+        collectedDeposits,
+        collectedShop,
+        totalCollected: collectedDeposits + collectedShop,
+        pendingDeposits: pendingDepositsTotal,
+        pendingShop: pendingShopTotal,
+        totalPending: pendingDepositsTotal + pendingShopTotal,
+        depositCount: deposits.rows[0]?.count ?? 0,
+        shopSaleCount: shop.rows[0]?.count ?? 0,
+      },
+      recent,
+    };
   }
 
   async getPublicLeaderboard(clubId: string, limit = 20, monthKey?: string) {
@@ -391,6 +688,52 @@ export class ClubsService {
     };
   }
 
+  private async queryPeriodLeaderboard(clubId: string, period: RankingPeriod, limit = 20) {
+    if (period === 'weekly') {
+      const result = await this.db.query(
+        `SELECT cpl.user_id,
+                u.name,
+                p.nickname,
+                p.photo_url,
+                SUM(cpl.amount)::int AS points,
+                COUNT(*) FILTER (WHERE cpl.amount > 0)::int AS matches_at_club,
+                RANK() OVER (ORDER BY SUM(cpl.amount) DESC) AS rank
+         FROM club_points_ledger cpl
+         INNER JOIN users u ON u.id = cpl.user_id
+         LEFT JOIN players p ON p.user_id = cpl.user_id
+         WHERE cpl.club_id = $1
+           AND cpl.created_at >= NOW() - INTERVAL '7 days'
+           AND cpl.amount > 0
+         GROUP BY cpl.user_id, u.name, p.nickname, p.photo_url
+         HAVING SUM(cpl.amount) > 0
+         ORDER BY points DESC, matches_at_club DESC
+         LIMIT $2`,
+        [clubId, limit],
+      );
+      return result.rows;
+    }
+
+    const year = new Date().getFullYear().toString();
+    const result = await this.db.query(
+      `SELECT cmmp.user_id,
+              u.name,
+              p.nickname,
+              p.photo_url,
+              SUM(cmmp.points)::int AS points,
+              SUM(cmmp.matches_played)::int AS matches_at_club,
+              RANK() OVER (ORDER BY SUM(cmmp.points) DESC) AS rank
+       FROM club_member_monthly_points cmmp
+       INNER JOIN users u ON u.id = cmmp.user_id
+       LEFT JOIN players p ON p.user_id = cmmp.user_id
+       WHERE cmmp.club_id = $1 AND cmmp.month_key LIKE $2 AND cmmp.points > 0
+       GROUP BY cmmp.user_id, u.name, p.nickname, p.photo_url
+       ORDER BY points DESC, matches_at_club DESC
+       LIMIT $3`,
+      [clubId, `${year}-%`, limit],
+    );
+    return result.rows;
+  }
+
   private async queryMonthlyLeaderboard(clubId: string, limit = 20, monthKey?: string) {
     const month = monthKey ?? getMonthKey();
     const result = await this.db.query(
@@ -442,7 +785,7 @@ export class ClubsService {
         dto.dayOfWeek ?? null,
         dto.startHour,
         dto.endHour,
-        dto.bonusPoints,
+        dto.bonusPoints ?? 0,
         dto.active ?? true,
       ],
     );
@@ -491,33 +834,269 @@ export class ClubsService {
     return result.rows[0];
   }
 
-  private async resolveSlotBonus(clubId: string, dto: CreateCourtSlotDto): Promise<number> {
-    if (dto.bonusPoints != null && dto.bonusPoints > 0) {
-      return dto.bonusPoints;
+  async updateReward(clubId: string, userId: string, rewardId: string, dto: UpdateClubRewardDto) {
+    await this.assertClubRole(userId);
+    const result = await this.db.query(
+      `UPDATE club_reward_catalog
+       SET title = COALESCE($3, title),
+           description = COALESCE($4, description),
+           points_required = COALESCE($5, points_required),
+           reward_type = COALESCE($6, reward_type),
+           active = COALESCE($7, active)
+       WHERE id = $1 AND club_id = $2
+       RETURNING id, club_id, title, description, points_required, reward_type, active, created_at`,
+      [
+        rewardId,
+        clubId,
+        dto.title ?? null,
+        dto.description ?? null,
+        dto.pointsRequired ?? null,
+        dto.rewardType ?? null,
+        dto.active ?? null,
+      ],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Premio no encontrado');
+    }
+    return result.rows[0];
+  }
+
+  async listRewardRedemptions(clubId: string, userId: string, limit = 50) {
+    await this.assertClubRole(userId);
+    const safeLimit = Math.min(100, Math.max(5, limit));
+    const result = await this.db.query(
+      `SELECT r.id,
+              r.points_spent,
+              r.created_at,
+              u.name AS user_name,
+              p.nickname AS user_nickname,
+              rc.title AS reward_title
+       FROM club_reward_redemptions r
+       INNER JOIN users u ON u.id = r.user_id
+       LEFT JOIN players p ON p.user_id = r.user_id
+       INNER JOIN club_reward_catalog rc ON rc.id = r.reward_id
+       WHERE r.club_id = $1
+       ORDER BY r.created_at DESC
+       LIMIT $2`,
+      [clubId, safeLimit],
+    );
+    return result.rows;
+  }
+
+  async listShopProducts(clubId: string, options: { matchExtraOnly?: boolean } = {}) {
+    await this.findOne(clubId);
+    const params: Array<string | boolean> = [clubId];
+    let extraFilter = '';
+    if (options.matchExtraOnly) {
+      extraFilter = 'AND available_as_match_extra = TRUE';
+    }
+    const result = await this.db.query(
+      `SELECT id, name, description, price, kind, category, stock_quantity, available_as_match_extra
+       FROM club_shop_products
+       WHERE club_id = $1 AND active = TRUE ${extraFilter}
+       ORDER BY name ASC`,
+      params,
+    );
+    return result.rows;
+  }
+
+  async listShopProductsManage(clubId: string, userId: string) {
+    await this.assertClubRole(userId);
+    await this.findOne(clubId);
+    const result = await this.db.query(
+      `SELECT id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active, created_at
+       FROM club_shop_products
+       WHERE club_id = $1
+       ORDER BY active DESC, name ASC`,
+      [clubId],
+    );
+    return result.rows;
+  }
+
+  async createShopProduct(clubId: string, userId: string, dto: CreateShopProductDto) {
+    await this.assertClubRole(userId);
+    await this.findOne(clubId);
+    const kind = dto.kind ?? 'GENERAL';
+    const matchExtra =
+      dto.availableAsMatchExtra ?? (kind === 'MATCH_ADDON');
+    const result = await this.db.query(
+      `INSERT INTO club_shop_products
+         (club_id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active)
+       VALUES ($1, $2, $3, $4, 'GENERAL', $5, $6, $7, TRUE)
+       RETURNING id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active, created_at`,
+      [
+        clubId,
+        dto.name.trim(),
+        dto.description?.trim() || null,
+        dto.price,
+        dto.category ?? 'OTHER',
+        dto.stockQuantity ?? null,
+        matchExtra,
+      ],
+    );
+    return result.rows[0];
+  }
+
+  async updateShopProduct(
+    clubId: string,
+    userId: string,
+    productId: string,
+    dto: UpdateShopProductDto,
+  ) {
+    await this.assertClubRole(userId);
+    await this.findOne(clubId);
+
+    if (dto.name !== undefined && !dto.name.trim()) {
+      throw new BadRequestException('El nombre no puede estar vacío');
     }
 
-    const slotDate = new Date(`${dto.slotDate}T12:00:00`);
-    const dayOfWeek = slotDate.getDay();
-
-    const promo = await this.db.query(
-      `SELECT bonus_points FROM club_promotions
-       WHERE club_id = $1 AND active = TRUE
-         AND start_hour <= $3 AND end_hour >= $4
-         AND (day_of_week IS NULL OR day_of_week = $2)
-       ORDER BY bonus_points DESC
-       LIMIT 1`,
-      [clubId, dayOfWeek, dto.startHour, dto.endHour],
+    const result = await this.db.query(
+      `UPDATE club_shop_products
+       SET name = COALESCE($3, name),
+           description = CASE WHEN $4::text IS NOT NULL THEN NULLIF(TRIM($4), '') ELSE description END,
+           price = COALESCE($5, price),
+           kind = COALESCE($6, kind),
+           category = COALESCE($7, category),
+           stock_quantity = COALESCE($8, stock_quantity),
+           active = COALESCE($9, active),
+           available_as_match_extra = COALESCE($10, available_as_match_extra),
+           updated_at = NOW()
+       WHERE id = $1 AND club_id = $2
+       RETURNING id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active, created_at`,
+      [
+        productId,
+        clubId,
+        dto.name?.trim() ?? null,
+        dto.description !== undefined ? dto.description : null,
+        dto.price ?? null,
+        dto.kind ?? null,
+        dto.category ?? null,
+        dto.stockQuantity ?? null,
+        dto.active ?? null,
+        dto.availableAsMatchExtra ?? null,
+      ],
     );
 
-    if (promo.rows[0]) {
-      return promo.rows[0].bonus_points;
+    if (!result.rows[0]) {
+      throw new NotFoundException('Producto no encontrado');
     }
+    return result.rows[0];
+  }
 
-    if (dto.isDeadHour || (dto.startHour >= 10 && dto.endHour <= 16)) {
-      return 15;
+  async updateShopProductStock(
+    clubId: string,
+    userId: string,
+    productId: string,
+    dto: UpdateShopStockDto,
+  ) {
+    await this.assertClubRole(userId);
+    const result = await this.db.query(
+      `UPDATE club_shop_products
+       SET stock_quantity = $3
+       WHERE id = $1 AND club_id = $2
+       RETURNING id, name, stock_quantity, active`,
+      [productId, clubId, dto.stockQuantity],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Producto no encontrado');
     }
+    return result.rows[0];
+  }
 
+  async deactivateShopProduct(clubId: string, userId: string, productId: string) {
+    await this.assertClubRole(userId);
+    const result = await this.db.query(
+      `UPDATE club_shop_products SET active = FALSE WHERE id = $1 AND club_id = $2 RETURNING id`,
+      [productId, clubId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Producto no encontrado');
+    }
+    return { ok: true };
+  }
+
+  async listShopSales(clubId: string, userId: string) {
+    await this.assertClubRole(userId);
+    const result = await this.db.query(
+      `SELECT sp.id,
+              sp.quantity,
+              sp.subtotal,
+              sp.status,
+              sp.created_at,
+              p.name AS product_name,
+              u.name AS user_name,
+              m.title AS match_title
+       FROM shop_purchases sp
+       INNER JOIN club_shop_products p ON p.id = sp.product_id
+       INNER JOIN users u ON u.id = sp.user_id
+       LEFT JOIN matches m ON m.id = sp.match_id
+       WHERE sp.club_id = $1
+       ORDER BY sp.created_at DESC
+       LIMIT 50`,
+      [clubId],
+    );
+    return result.rows;
+  }
+
+  async listShopCoupons(clubId: string, userId: string) {
+    await this.assertClubRole(userId);
+    const result = await this.db.query(
+      `SELECT id, code, label, discount_percent, discount_amount, points_cost,
+              max_uses, uses_count, active, expires_at, created_at
+       FROM club_shop_coupons
+       WHERE club_id = $1
+       ORDER BY active DESC, created_at DESC`,
+      [clubId],
+    );
+    return result.rows;
+  }
+
+  async createShopCoupon(clubId: string, userId: string, dto: CreateShopCouponDto) {
+    await this.assertClubRole(userId);
+    const code = dto.code.trim().toUpperCase();
+    if (!code) {
+      throw new BadRequestException('Indicá un código de cupón');
+    }
+    const result = await this.db.query(
+      `INSERT INTO club_shop_coupons
+         (club_id, code, label, discount_percent, discount_amount, points_cost, max_uses, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+       RETURNING *`,
+      [
+        clubId,
+        code,
+        dto.label.trim(),
+        dto.discountPercent ?? null,
+        dto.discountAmount ?? null,
+        dto.pointsCost ?? null,
+        dto.maxUses ?? null,
+      ],
+    );
+    return result.rows[0];
+  }
+
+  async deactivateShopCoupon(clubId: string, userId: string, couponId: string) {
+    await this.assertClubRole(userId);
+    const result = await this.db.query(
+      `UPDATE club_shop_coupons SET active = FALSE WHERE id = $1 AND club_id = $2 RETURNING id`,
+      [couponId, clubId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Cupón no encontrado');
+    }
+    return { ok: true };
+  }
+
+  private async resolveSlotBonus(_clubId: string, _dto: CreateCourtSlotDto): Promise<number> {
     return 0;
+  }
+
+  private formatHourLabel(hour: number): string {
+    const totalMinutes = Math.round(Number(hour) * 60);
+    if (totalMinutes >= 24 * 60) return '00:00';
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   }
 
   private async assertClubRole(userId: string) {

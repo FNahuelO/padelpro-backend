@@ -1,8 +1,30 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { CreateTournamentPhotoDto } from './dto/create-tournament-photo.dto';
+import {
+  CreateRegistrationDto,
+  CreateTournamentDateDto,
+  CreateTournamentDto,
+  CreateTournamentMatchDto,
+  GenerateFixtureDto,
+  SetScoreDto,
+  UpdateMatchDto,
+  UpdateTournamentDto,
+} from './dto/tournament-dtos';
 import { TournamentsService } from './tournaments.service';
 
 @Controller('tournaments')
@@ -12,23 +34,258 @@ export class TournamentsController {
     private readonly realtimeGateway: RealtimeGateway,
   ) {}
 
-  @Post()
-  @UseGuards(JwtAuthGuard)
-  async create(@CurrentUser() user: { sub: string }, @Body() dto: any) {
-    const created = await this.tournamentsService.create(user.sub, dto);
-    this.realtimeGateway.emitTournamentUpdated(created);
-    return created;
-  }
+  // --- Rutas estáticas (deben ir antes de ':id') ---
 
   @Get()
   list() {
     return this.tournamentsService.list();
   }
 
+  @Get('pay/mock')
+  async mockPay(@Query('ref') ref: string, @Res() res: Response) {
+    if (ref) await this.tournamentsService.approvePaymentByRef(ref);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(
+      `<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
+        <h2>Inscripción pagada (modo prueba)</h2>
+        <p>Podés volver a la app de Padely.</p>
+      </body></html>`,
+    );
+  }
+
+  @Get('pay/return')
+  payReturn(@Res() res: Response) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(
+      `<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
+        <h2>Pago recibido</h2><p>Volvé a la app para ver tu inscripción.</p></body></html>`,
+    );
+  }
+
+  @Post('webhooks/mercadopago')
+  webhook(@Body() body: Record<string, unknown>) {
+    return this.tournamentsService.handleMercadoPagoWebhook(body as any);
+  }
+
+  // --- Torneos ---
+
+  @Post()
+  @UseGuards(JwtAuthGuard)
+  async create(@CurrentUser() user: { sub: string }, @Body() dto: CreateTournamentDto) {
+    const created = await this.tournamentsService.create(user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated(created);
+    return created;
+  }
+
   @Get(':id')
   getById(@Param('id') id: string) {
     return this.tournamentsService.getById(id);
   }
+
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard)
+  async update(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: UpdateTournamentDto,
+  ) {
+    const updated = await this.tournamentsService.update(id, user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated(updated);
+    return updated;
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  remove(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
+    return this.tournamentsService.remove(id, user.sub);
+  }
+
+  // --- Fechas ---
+
+  @Get(':id/dates')
+  listDates(@Param('id') id: string) {
+    return this.tournamentsService.listDates(id);
+  }
+
+  @Post(':id/dates')
+  @UseGuards(JwtAuthGuard)
+  async addDate(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: CreateTournamentDateDto,
+  ) {
+    const date = await this.tournamentsService.addDate(id, user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'date_added' });
+    return date;
+  }
+
+  @Delete(':id/dates/:dateId')
+  @UseGuards(JwtAuthGuard)
+  removeDate(
+    @Param('id') id: string,
+    @Param('dateId') dateId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.removeDate(id, dateId, user.sub);
+  }
+
+  // --- Inscripciones ---
+
+  @Get(':id/registrations')
+  registrations(@Param('id') id: string) {
+    return this.tournamentsService.listRegistrations(id);
+  }
+
+  @Get(':id/registrations/me')
+  @UseGuards(JwtAuthGuard)
+  myRegistration(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
+    return this.tournamentsService.getMyRegistration(id, user.sub);
+  }
+
+  @Post(':id/registrations')
+  @UseGuards(JwtAuthGuard)
+  async register(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: CreateRegistrationDto,
+  ) {
+    const reg = await this.tournamentsService.register(id, user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'registration_added' });
+    return reg;
+  }
+
+  @Post(':id/registrations/:regId/approve')
+  @UseGuards(JwtAuthGuard)
+  async approve(
+    @Param('id') id: string,
+    @Param('regId') regId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    const reg = await this.tournamentsService.approveRegistration(id, regId, user.sub);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'registration_approved' });
+    return reg;
+  }
+
+  @Post(':id/registrations/:regId/reject')
+  @UseGuards(JwtAuthGuard)
+  reject(
+    @Param('id') id: string,
+    @Param('regId') regId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.rejectRegistration(id, regId, user.sub);
+  }
+
+  @Delete(':id/registrations/:regId')
+  @UseGuards(JwtAuthGuard)
+  removeRegistration(
+    @Param('id') id: string,
+    @Param('regId') regId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.removeRegistration(id, regId, user.sub);
+  }
+
+  // --- Pagos de inscripción ---
+
+  @Post(':id/registrations/:regId/checkout')
+  @UseGuards(JwtAuthGuard)
+  checkout(
+    @Param('id') id: string,
+    @Param('regId') regId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.createRegistrationCheckout(id, regId, user.sub);
+  }
+
+  @Post(':id/registrations/:regId/pay/simulate')
+  @UseGuards(JwtAuthGuard)
+  simulatePay(
+    @Param('id') id: string,
+    @Param('regId') regId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.simulatePayment(id, regId, user.sub);
+  }
+
+  // --- Partidos / Fixture ---
+
+  @Get(':id/matches')
+  matches(@Param('id') id: string) {
+    return this.tournamentsService.listMatches(id);
+  }
+
+  @Get(':id/fixture')
+  fixture(@Param('id') id: string) {
+    return this.tournamentsService.listMatches(id);
+  }
+
+  @Get(':id/standings')
+  standings(@Param('id') id: string) {
+    return this.tournamentsService.getStandings(id);
+  }
+
+  @Post(':id/matches')
+  @UseGuards(JwtAuthGuard)
+  async createMatch(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: CreateTournamentMatchDto,
+  ) {
+    const match = await this.tournamentsService.createMatch(id, user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'match_created' });
+    return match;
+  }
+
+  @Patch(':id/matches/:matchId')
+  @UseGuards(JwtAuthGuard)
+  async updateMatch(
+    @Param('id') id: string,
+    @Param('matchId') matchId: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: UpdateMatchDto,
+  ) {
+    const match = await this.tournamentsService.updateMatch(id, matchId, user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'match_updated' });
+    return match;
+  }
+
+  @Post(':id/matches/:matchId/score')
+  @UseGuards(JwtAuthGuard)
+  async setScore(
+    @Param('id') id: string,
+    @Param('matchId') matchId: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: SetScoreDto,
+  ) {
+    const match = await this.tournamentsService.setMatchScore(id, matchId, user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'score_updated' });
+    return match;
+  }
+
+  @Delete(':id/matches/:matchId')
+  @UseGuards(JwtAuthGuard)
+  removeMatch(
+    @Param('id') id: string,
+    @Param('matchId') matchId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.removeMatch(id, matchId, user.sub);
+  }
+
+  @Post(':id/generate-fixture')
+  @UseGuards(JwtAuthGuard)
+  async generateFixture(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: GenerateFixtureDto,
+  ) {
+    const matches = await this.tournamentsService.generateFixture(id, user.sub, dto);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'fixture_generated' });
+    return matches;
+  }
+
+  // --- Fotos ---
 
   @Get(':id/photos')
   getPhotos(@Param('id') id: string) {
@@ -49,36 +306,11 @@ export class TournamentsController {
 
   @Delete(':id/photos/:photoId')
   @UseGuards(JwtAuthGuard)
-  async deletePhoto(
+  deletePhoto(
     @Param('id') id: string,
     @Param('photoId') photoId: string,
     @CurrentUser() user: { sub: string },
   ) {
     return this.tournamentsService.deletePhoto(id, photoId, user.sub);
-  }
-
-  @Post(':id/register')
-  register() {
-    return { message: 'Estructura lista para registro de torneo (fase siguiente)' };
-  }
-
-  @Get(':id/registrations')
-  registrations() {
-    return [];
-  }
-
-  @Post(':id/generate-fixture')
-  generateFixture() {
-    return { message: 'Fixture automático complejo pendiente para fase siguiente' };
-  }
-
-  @Get(':id/fixture')
-  fixture() {
-    return [];
-  }
-
-  @Get(':id/standings')
-  standings() {
-    return [];
   }
 }

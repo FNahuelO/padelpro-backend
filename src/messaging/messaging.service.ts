@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { isClubRole } from '../common/roles';
 import { DatabaseService } from '../database/database.service';
 
 type MessageAccessDenied = {
@@ -68,16 +69,35 @@ export class MessagingService {
     if (userId === otherUserId) {
       return { canMessage: false, reason: 'self' };
     }
+
+    const conv = await this.findConversation(userId, otherUserId);
+    const userIsClub = await this.isClubUser(userId);
+    const otherIsClub = await this.isClubUser(otherUserId);
+
+    if (userIsClub || otherIsClub) {
+      if (conv?.status === 'active') {
+        return { canMessage: true, conversationId: conv.id };
+      }
+      if (await this.areFriends(userId, otherUserId) || (await this.havePlayedTogether(userId, otherUserId))) {
+        return { canMessage: true, conversationId: conv?.id };
+      }
+      return this.resolveConversationAccess(userId, conv);
+    }
+
     if (await this.areFriends(userId, otherUserId)) {
-      const conv = await this.findConversation(userId, otherUserId);
       return { canMessage: true, conversationId: conv?.id };
     }
     if (await this.havePlayedTogether(userId, otherUserId)) {
-      const conv = await this.findConversation(userId, otherUserId);
       return { canMessage: true, conversationId: conv?.id };
     }
 
-    const conv = await this.findConversation(userId, otherUserId);
+    return this.resolveConversationAccess(userId, conv);
+  }
+
+  private resolveConversationAccess(
+    userId: string,
+    conv?: { id: string; status: string; requested_by_id: string },
+  ): MessageAccess {
     if (!conv) {
       return { canMessage: false, reason: 'need_request', canSendRequest: true };
     }
@@ -91,6 +111,11 @@ export class MessagingService {
       return { canMessage: false, reason: 'pending_outgoing' };
     }
     return { canMessage: false, reason: 'pending_incoming' };
+  }
+
+  private async isClubUser(userId: string): Promise<boolean> {
+    const result = await this.db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+    return isClubRole(result.rows[0]?.role);
   }
 
   private async findConversation(userId: string, otherUserId: string) {

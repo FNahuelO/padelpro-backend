@@ -5,12 +5,35 @@ import type { ParsedBestOfThree } from '../common/utils/match-result.util';
 import type { PlayerRatingDto } from './dto/player-rating.dto';
 import { userTeamFromRank } from '../common/utils/match-result.util';
 import { ratingToSkillScore, resolvePlayerRating } from '../common/utils';
+import { COURT_SLOT_END_AT_SQL, MATCH_COURT_END_AT_SQL } from '../common/utils/court-schedule.util';
 
 export const RESULT_CONFIRM_HOURS = 48;
 
 @Injectable()
 export class MatchesRepository {
   constructor(private readonly db: DatabaseService) {}
+
+  async expirePastCourtSlots(): Promise<number> {
+    const result = await this.db.query(
+      `UPDATE court_availability_slots
+       SET status = 'CANCELLED'
+       WHERE status = 'OPEN'
+         AND ${COURT_SLOT_END_AT_SQL} < NOW()
+       RETURNING id`,
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async expirePastCourtWindowMatches(): Promise<number> {
+    const result = await this.db.query(
+      `UPDATE matches m
+       SET status = 'CANCELLED', updated_at = NOW()
+       WHERE m.status IN ('OPEN', 'FULL', 'CONFIRMED')
+         AND (${MATCH_COURT_END_AT_SQL}) < NOW()
+       RETURNING id`,
+    );
+    return result.rowCount ?? 0;
+  }
 
   create(createdByUserId: string, dto: CreateMatchDto) {
     return this.db.query(

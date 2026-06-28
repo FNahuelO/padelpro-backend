@@ -31,6 +31,15 @@ export class MatchesService {
     private readonly paymentsService: PaymentsService,
   ) {}
 
+  async expirePastCourtWindowMatches(): Promise<number> {
+    await this.matchesRepository.expirePastCourtSlots();
+    return this.matchesRepository.expirePastCourtWindowMatches();
+  }
+
+  private async refreshExpiredCourtWindows() {
+    await this.expirePastCourtWindowMatches();
+  }
+
   async create(userId: string, dto: CreateMatchDto) {
     if (dto.levelMin == null || dto.levelMax == null) {
       const level = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
@@ -57,6 +66,7 @@ export class MatchesService {
   }
 
   async findOne(id: string, viewerUserId?: string) {
+    await this.refreshExpiredCourtWindows();
     const match = await this.matchesRepository.getDetail(id);
     if (!match) {
       throw new NotFoundException('Partido no encontrado');
@@ -68,11 +78,13 @@ export class MatchesService {
     return match;
   }
 
-  findAll() {
+  async findAll() {
+    await this.refreshExpiredCourtWindows();
     return this.matchesRepository.listOpen();
   }
 
-  getMyMatches(userId: string) {
+  async getMyMatches(userId: string) {
+    await this.refreshExpiredCourtWindows();
     return this.matchesRepository.listByUser(userId);
   }
 

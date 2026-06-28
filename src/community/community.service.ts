@@ -3,12 +3,17 @@ import { ALL_CATEGORIES, getLevelCategory } from '../common/utils';
 import { getCategoryLevelRange } from '../common/utils/level-range.util';
 import { DatabaseService } from '../database/database.service';
 import { resolvePlayerRating } from '../common/utils/player-rating.util';
+import { MatchesService } from '../matches/matches.service';
 
 @Injectable()
 export class CommunityService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly matchesService: MatchesService,
+  ) {}
 
   async feed(userId: string) {
+    await this.matchesService.expirePastCourtWindowMatches();
     const viewer = await this.db.query(
       `SELECT p.level, p.rating
        FROM players p

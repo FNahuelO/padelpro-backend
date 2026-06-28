@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { isClubRole } from '../common/roles';
 import { DatabaseService } from '../database/database.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 
@@ -10,6 +11,7 @@ export class ChatService {
   ) {}
 
   async getMatchMessages(matchId: string, userId: string) {
+    await this.assertNotClubAccount(userId);
     await this.assertParticipant(matchId, userId);
     const chatId = await this.getOrCreateMatchChat(matchId);
     const result = await this.db.query(
@@ -24,6 +26,7 @@ export class ChatService {
   }
 
   async createMessage(matchId: string, userId: string, content: string) {
+    await this.assertNotClubAccount(userId);
     await this.assertParticipant(matchId, userId);
     const chatId = await this.getOrCreateMatchChat(matchId);
     const result = await this.db.query(
@@ -45,6 +48,13 @@ export class ChatService {
     );
     const chat = await this.db.query(`SELECT id FROM chats WHERE match_id = $1`, [matchId]);
     return chat.rows[0].id;
+  }
+
+  private async assertNotClubAccount(userId: string) {
+    const result = await this.db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+    if (isClubRole(result.rows[0]?.role)) {
+      throw new ForbiddenException('Las cuentas de club usan chats directos, no el chat de partidos');
+    }
   }
 
   private async assertParticipant(matchId: string, userId: string) {

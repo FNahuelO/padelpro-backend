@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class CreateClubPromotionDto {
   @IsString()
@@ -10,20 +10,21 @@ export class CreateClubPromotionDto {
   @Max(6)
   dayOfWeek?: number;
 
-  @IsInt()
+  @IsNumber()
   @Min(0)
-  @Max(23)
+  @Max(23.5)
   startHour: number;
 
-  @IsInt()
-  @Min(1)
+  @IsNumber()
+  @Min(0.5)
   @Max(24)
   endHour: number;
 
+  @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(0)
   @Max(500)
-  bonusPoints: number;
+  bonusPoints?: number;
 
   @IsOptional()
   @IsBoolean()
