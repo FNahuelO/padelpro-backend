@@ -12,13 +12,9 @@ import { PlayerRatingDto } from './dto/player-rating.dto';
 import { UpdateMatchStatusDto } from './dto/update-match-status.dto';
 import { MatchesRepository } from './matches.repository';
 import { PaymentsService } from '../payments/payments.service';
-import { computeEloDelta, resolvePlayerRating } from '../common/utils';
+import { resolvePlayerRating } from '../common/utils';
 import { parseBestOfThreeSets } from '../common/utils/match-result.util';
-
-function userTeamFromRank(rnk: number, neededPlayers: number): 'A' | 'B' {
-  const half = Math.ceil(Math.max(neededPlayers, 2) / 2);
-  return rnk <= half ? 'A' : 'B';
-}
+import { computeMatchRatingChanges, splitParticipantsByTeam } from '../rating/engine';
 
 @Injectable()
 export class MatchesService {
@@ -458,42 +454,53 @@ export class MatchesService {
     const match = await this.matchesRepository.getById(matchId);
     if (!match) return;
 
+    const detail = await this.matchesRepository.getDetail(matchId);
+    const sets = (detail?.result?.sets ?? []) as Array<{ teamA: number; teamB: number }>;
+
     const participants = await this.matchesRepository.getParticipantsForRating(matchId);
     if (participants.length < 2) {
       return;
     }
 
     const neededPlayers = Number(match.needed_players) || participants.length;
-    const teamA = participants.filter((player) => userTeamFromRank(player.rank, neededPlayers) === 'A');
-    const teamB = participants.filter((player) => userTeamFromRank(player.rank, neededPlayers) === 'B');
+    const { teamA, teamB } = splitParticipantsByTeam(participants, neededPlayers);
     if (teamA.length === 0 || teamB.length === 0) {
       return;
     }
 
-    const averageRating = (team: typeof participants) =>
-      team.reduce((sum, player) => sum + resolvePlayerRating(player), 0) / team.length;
+    const priorEncounters = await this.matchesRepository.countRecentTeamMatchups(
+      matchId,
+      teamA.map((player) => player.userId),
+      teamB.map((player) => player.userId),
+    );
 
-    const teamARating = averageRating(teamA);
-    const teamBRating = averageRating(teamB);
-    const normalizedWinner = String(winnerTeam || '').toUpperCase().trim();
-    const actualScoreA =
-      normalizedWinner === 'A' ? 1 : normalizedWinner === 'B' ? 0 : 0.5;
-    const deltaA = computeEloDelta(teamARating, teamBRating, actualScoreA);
-    const deltaB = -deltaA;
+    const normalizedWinner = String(winnerTeam || '')
+      .toUpperCase()
+      .trim();
+    const winner: 'A' | 'B' | null =
+      normalizedWinner === 'A' ? 'A' : normalizedWinner === 'B' ? 'B' : null;
 
-    const changes = participants.map((player) => {
-      const ratingBefore = resolvePlayerRating(player);
-      const delta =
-        userTeamFromRank(player.rank, neededPlayers) === 'A' ? deltaA : deltaB;
-      return {
+    const changes = computeMatchRatingChanges({
+      participants: participants.map((player) => ({
         userId: player.userId,
-        ratingBefore,
-        ratingAfter: Math.max(100, ratingBefore + delta),
-        delta,
-      };
+        rating: resolvePlayerRating(player),
+        rank: player.rank,
+      })),
+      neededPlayers,
+      winnerTeam: winner,
+      priorEncounters,
+      sets,
     });
 
-    await this.matchesRepository.savePlayerRatingHistory(matchId, changes);
+    await this.matchesRepository.savePlayerRatingHistory(
+      matchId,
+      changes.map((change) => ({
+        userId: change.userId,
+        ratingBefore: change.ratingBefore,
+        ratingAfter: change.ratingAfter,
+        delta: change.delta,
+      })),
+    );
   }
 
   private async saveOptionalPlayerRatings(

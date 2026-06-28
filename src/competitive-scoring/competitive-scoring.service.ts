@@ -7,6 +7,8 @@ import {
 import { getLevelCategory, getMonthKey } from '../common/utils';
 import { levelToRating } from '../common/utils/player-rating.util';
 import { DatabaseService } from '../database/database.service';
+import { applyNoveltyToCompetitivePoints, splitParticipantsByTeam } from '../rating/engine';
+import { countRecentTeamMatchups } from '../rating/matchup-history';
 
 type MatchParticipant = {
   userId: string;
@@ -84,6 +86,19 @@ export class CompetitiveScoringService {
 
     const neededPlayers = Number(match.needed_players) || 4;
     const monthKey = getMonthKey(new Date(match.date));
+    const { teamA, teamB } = splitParticipantsByTeam(
+      participants.map((player) => ({ userId: player.userId, rank: player.rnk })),
+      neededPlayers,
+    );
+    const priorEncounters =
+      teamA.length > 0 && teamB.length > 0
+        ? await countRecentTeamMatchups(
+            this.db,
+            matchId,
+            teamA.map((player) => player.userId),
+            teamB.map((player) => player.userId),
+          )
+        : 0;
 
     for (const player of participants) {
       const myTeam = userTeamFromRank(player.rnk, neededPlayers);
@@ -102,10 +117,9 @@ export class CompetitiveScoringService {
         match.winner_team,
         match.score,
       );
-      const points = computeCompetitiveMatchPoints(
-        myCategory,
-        opponentCategories,
-        outcome,
+      const points = applyNoveltyToCompetitivePoints(
+        computeCompetitiveMatchPoints(myCategory, opponentCategories, outcome),
+        priorEncounters,
       );
 
       const ledgerInsert = await this.db.query(

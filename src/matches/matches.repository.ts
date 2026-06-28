@@ -6,6 +6,7 @@ import type { PlayerRatingDto } from './dto/player-rating.dto';
 import { userTeamFromRank } from '../common/utils/match-result.util';
 import { ratingToSkillScore, resolvePlayerRating } from '../common/utils';
 import { COURT_SLOT_END_AT_SQL, MATCH_COURT_END_AT_SQL } from '../common/utils/court-schedule.util';
+import { countRecentTeamMatchups as countRecentTeamMatchupsQuery } from '../rating/matchup-history';
 
 export const RESULT_CONFIRM_HOURS = 48;
 
@@ -643,6 +644,15 @@ export class MatchesRepository {
         [change.userId, matchId, change.ratingBefore, change.ratingAfter, change.delta],
       );
     }
+  }
+
+  countRecentTeamMatchups(
+    matchId: string,
+    teamAUserIds: string[],
+    teamBUserIds: string[],
+    windowDays?: number,
+  ) {
+    return countRecentTeamMatchupsQuery(this.db, matchId, teamAUserIds, teamBUserIds, windowDays);
   }
 
   async addResultRejection(matchId: string, userId: string, comment?: string) {
