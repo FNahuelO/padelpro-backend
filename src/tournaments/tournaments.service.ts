@@ -255,11 +255,21 @@ export class TournamentsService {
 
   async register(tournamentId: string, userId: string | null, dto: CreateRegistrationDto) {
     const tournament = await this.getById(tournamentId);
-    if (tournament.status !== 'OPEN_REGISTRATION') {
-      throw new BadRequestException('Las inscripciones no están abiertas');
-    }
-    if (tournament.spots_left != null && tournament.spots_left <= 0) {
-      throw new BadRequestException('No quedan cupos disponibles');
+    // El organizador puede inscribir parejas en nombre de los jugadores aunque
+    // las inscripciones no estén abiertas; al jugador final sí se le exigen los límites.
+    const managerRegistration = dto.onBehalf && userId ? await this.isManager(userId) : false;
+    if (!managerRegistration) {
+      if (userId && (await this.isManager(userId))) {
+        throw new ForbiddenException(
+          'Los organizadores no pueden inscribirse para jugar. Usá la gestión del torneo para inscribir parejas.',
+        );
+      }
+      if (tournament.status !== 'OPEN_REGISTRATION') {
+        throw new BadRequestException('Las inscripciones no están abiertas');
+      }
+      if (tournament.spots_left != null && tournament.spots_left <= 0) {
+        throw new BadRequestException('No quedan cupos disponibles');
+      }
     }
 
     const price = tournament.price != null ? Number(tournament.price) : 0;
@@ -275,7 +285,7 @@ export class TournamentsService {
       [
         tournamentId,
         userId,
-        dto.player1UserId ?? userId,
+        dto.player1UserId ?? (dto.onBehalf ? null : userId),
         dto.player2UserId ?? null,
         dto.player1Name,
         dto.player2Name,
@@ -770,6 +780,15 @@ export class TournamentsService {
     const role = await this.getRole(userId);
     if (!MANAGER_ROLES.includes(role)) {
       throw new ForbiddenException('Solo cuentas de organizador pueden realizar esta acción');
+    }
+  }
+
+  private async isManager(userId: string): Promise<boolean> {
+    try {
+      const role = await this.getRole(userId);
+      return MANAGER_ROLES.includes(role);
+    } catch {
+      return false;
     }
   }
 

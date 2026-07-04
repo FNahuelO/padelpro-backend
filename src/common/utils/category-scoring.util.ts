@@ -1,59 +1,54 @@
-import { ALL_CATEGORIES } from './level-category.util';
+import { normalizeSkillScore } from './player-rating.util';
 
-/** Puntos base al ganar o perder contra rivales de tu misma categoría. */
-export const COMPETITIVE_BASE_POINTS = 20;
+/** Puntos base al ganar o perder contra rivales de nivel parecido. */
+export const COMPETITIVE_BASE_POINTS = 200;
 
-/** Variación por cada escalón de categoría respecto al rival. */
-export const COMPETITIVE_POINTS_PER_STEP = 5;
+/**
+ * Ajuste por cada punto de diferencia de nivel (0–1000).
+ * Positivo si los rivales son más fuertes → más puntos al ganar, menos al perder.
+ */
+export const COMPETITIVE_SKILL_FACTOR = 0.2;
 
 /** Mínimo que podés sumar en una victoria. */
-export const COMPETITIVE_MIN_WIN_POINTS = 5;
+export const COMPETITIVE_MIN_WIN_POINTS = 50;
 
 /** Mínimo que perdés en una derrota (magnitud; el valor es negativo). */
-export const COMPETITIVE_MIN_LOSS_POINTS = 5;
+export const COMPETITIVE_MIN_LOSS_POINTS = 50;
 
 /** Tope de puntos que podés perder en un partido. */
-export const COMPETITIVE_MAX_LOSS_POINTS = 35;
+export const COMPETITIVE_MAX_LOSS_POINTS = 350;
 
 export type CompetitiveMatchOutcome = 'win' | 'loss' | 'draw';
 
-export function getCategoryIndex(category: string): number {
-  const idx = ALL_CATEGORIES.indexOf(category as (typeof ALL_CATEGORIES)[number]);
-  return idx >= 0 ? idx : ALL_CATEGORIES.length - 1;
-}
-
-function averageOpponentIndex(opponentCategories: string[]): number | null {
-  if (opponentCategories.length === 0) return null;
-  return (
-    opponentCategories.reduce((sum, cat) => sum + getCategoryIndex(cat), 0) /
-    opponentCategories.length
-  );
+function averageSkill(skills: number[]): number | null {
+  if (skills.length === 0) return null;
+  return skills.reduce((sum, skill) => sum + skill, 0) / skills.length;
 }
 
 /**
- * Puntos por partido competitivo según resultado y categoría de los rivales.
+ * Puntos por partido competitivo según resultado y nivel de los rivales (0–1000).
  *
  * Victoria:
- * - Misma categoría → +X
- * - Rivales peores → menos que X
- * - Rivales mejores → más que X
+ * - Rivales de nivel similar → +X
+ * - Rivales mucho más débiles → menos que X
+ * - Rivales más fuertes → más que X
  *
  * Derrota:
- * - Misma categoría → −X
- * - Rivales peores → perdés más que X
- * - Rivales mejores → perdés menos que X
+ * - Rivales de nivel similar → −X
+ * - Rivales mucho más débiles → perdés más que X
+ * - Rivales más fuertes → perdés menos que X
  */
 export function computeCompetitiveMatchPoints(
-  myCategory: string,
-  opponentCategories: string[],
+  mySkill: number,
+  opponentSkills: number[],
   outcome: CompetitiveMatchOutcome,
 ): number {
   if (outcome === 'draw') return 0;
 
-  const myIdx = getCategoryIndex(myCategory);
-  const avgOpponentIdx = averageOpponentIndex(opponentCategories);
-  const adjustment =
-    avgOpponentIdx == null ? 0 : Math.round((myIdx - avgOpponentIdx) * COMPETITIVE_POINTS_PER_STEP);
+  const myLevel = normalizeSkillScore(mySkill);
+  const avgOpponent = averageSkill(opponentSkills.map((skill) => normalizeSkillScore(skill)));
+  const skillDelta = avgOpponent == null ? 0 : avgOpponent - myLevel;
+  const adjustment = Math.round(skillDelta * COMPETITIVE_SKILL_FACTOR);
 
   if (outcome === 'win') {
     const raw = COMPETITIVE_BASE_POINTS + adjustment;

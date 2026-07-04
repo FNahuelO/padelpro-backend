@@ -20,6 +20,8 @@ import { RealtimeModule } from './realtime/realtime.module';
 import { ShopModule } from './shop/shop.module';
 import { PaymentsModule } from './payments/payments.module';
 import { CompetitiveScoringModule } from './competitive-scoring/competitive-scoring.module';
+import { BadgesModule } from './badges/badges.module';
+import { ReportsModule } from './reports/reports.module';
 import { TournamentsModule } from './tournaments/tournaments.module';
 import { HealthController } from './health/health.controller';
 
@@ -52,6 +54,8 @@ import { HealthController } from './health/health.controller';
     ShopModule,
     PaymentsModule,
     CompetitiveScoringModule,
+    BadgesModule,
+    ReportsModule,
     TournamentsModule,
   ],
   controllers: [HealthController],

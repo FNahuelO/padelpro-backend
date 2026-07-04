@@ -11,6 +11,8 @@ export { getLevelCategory, getCategoryRatingRange, ALL_CATEGORIES } from './leve
 export {
   DEFAULT_PLAYER_RATING,
   DEFAULT_SKILL_SCORE,
+  MAX_VISIBLE_SKILL_SCORE,
+  MIN_VISIBLE_SKILL_SCORE,
   ELO_K_FACTOR,
   levelToRating,
   normalizeSkillScore,
@@ -24,11 +26,10 @@ export {
 } from './player-rating.util';
 export {
   COMPETITIVE_BASE_POINTS,
-  COMPETITIVE_POINTS_PER_STEP,
+  COMPETITIVE_SKILL_FACTOR,
   COMPETITIVE_MIN_WIN_POINTS,
   COMPETITIVE_MIN_LOSS_POINTS,
   COMPETITIVE_MAX_LOSS_POINTS,
-  getCategoryIndex,
   computeCompetitiveMatchPoints,
   type CompetitiveMatchOutcome,
 } from './category-scoring.util';

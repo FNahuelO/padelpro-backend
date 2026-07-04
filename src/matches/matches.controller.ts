@@ -61,6 +61,24 @@ export class MatchesController {
     return this.matchesService.joinMatch(id, user.sub);
   }
 
+  @Post(':id/join-requests/:userId/accept')
+  acceptJoinRequest(
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.matchesService.acceptJoinRequest(id, userId, user.sub);
+  }
+
+  @Post(':id/join-requests/:userId/reject')
+  rejectJoinRequest(
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.matchesService.rejectJoinRequest(id, userId, user.sub);
+  }
+
   @Post(':id/leave')
   leaveMatch(@Param('id') id: string, @CurrentUser() user: any) {
     return this.matchesService.leaveMatch(id, user.sub);

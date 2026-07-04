@@ -31,9 +31,14 @@ describe('getLevelCategory', () => {
     expect(getLevelCategory(999)).toBe('6ta');
   });
 
-  it('debería retornar "7ma" para rating < 800', () => {
-    expect(getLevelCategory(0)).toBe('7ma');
+  it('debería retornar "7ma" para rating 600-799', () => {
+    expect(getLevelCategory(600)).toBe('7ma');
     expect(getLevelCategory(799)).toBe('7ma');
+  });
+
+  it('debería retornar "8va" para rating < 600', () => {
+    expect(getLevelCategory(0)).toBe('8va');
+    expect(getLevelCategory(599)).toBe('8va');
   });
 });
 
@@ -45,7 +50,8 @@ describe('getCategoryRatingRange', () => {
     expect(getCategoryRatingRange('4ta')).toEqual({ min: 1200, max: 1399 });
     expect(getCategoryRatingRange('5ta')).toEqual({ min: 1000, max: 1199 });
     expect(getCategoryRatingRange('6ta')).toEqual({ min: 800, max: 999 });
-    expect(getCategoryRatingRange('7ma')).toEqual({ min: 0, max: 799 });
+    expect(getCategoryRatingRange('7ma')).toEqual({ min: 600, max: 799 });
+    expect(getCategoryRatingRange('8va')).toEqual({ min: 0, max: 599 });
   });
 
   it('debería retornar rango completo para categoría desconocida', () => {
@@ -53,7 +59,6 @@ describe('getCategoryRatingRange', () => {
   });
 
   it('la categoría derivada del rating coincide con el rango inverso', () => {
-    // Para cada categoría, un rating dentro del rango debería derivar esa categoría
     for (const cat of ALL_CATEGORIES) {
       const range = getCategoryRatingRange(cat);
       expect(getLevelCategory(range.min)).toBe(cat);
@@ -62,12 +67,11 @@ describe('getCategoryRatingRange', () => {
 });
 
 describe('ALL_CATEGORIES', () => {
-  it('debería contener 7 categorías', () => {
-    expect(ALL_CATEGORIES).toHaveLength(7);
+  it('debería contener 8 categorías', () => {
+    expect(ALL_CATEGORIES).toHaveLength(8);
   });
 
   it('debería estar ordenado de mayor a menor', () => {
-    expect(ALL_CATEGORIES).toEqual(['1ra', '2da', '3ra', '4ta', '5ta', '6ta', '7ma']);
+    expect(ALL_CATEGORIES).toEqual(['1ra', '2da', '3ra', '4ta', '5ta', '6ta', '7ma', '8va']);
   });
 });
-

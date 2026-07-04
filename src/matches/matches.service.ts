@@ -1,6 +1,7 @@
 import { BadRequestException, Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common';
 import { ClubPointsService } from '../clubs/club-points.service';
 import { CompetitiveScoringService } from '../competitive-scoring/competitive-scoring.service';
+import { BadgesService } from '../badges/badges.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { defaultLevelBand } from '../common/utils/level-range.util';
 import { CreateMatchDto } from './dto/create-match.dto';
@@ -23,6 +24,7 @@ export class MatchesService {
     private readonly realtimeGateway: RealtimeGateway,
     private readonly clubPointsService: ClubPointsService,
     private readonly competitiveScoringService: CompetitiveScoringService,
+    private readonly badgesService: BadgesService,
     @Inject(forwardRef(() => PaymentsService))
     private readonly paymentsService: PaymentsService,
   ) {}
@@ -39,7 +41,7 @@ export class MatchesService {
   async create(userId: string, dto: CreateMatchDto) {
     if (dto.levelMin == null || dto.levelMax == null) {
       const level = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
-      const band = defaultLevelBand(level ?? 40);
+      const band = defaultLevelBand(level ?? 400);
       dto.levelMin = dto.levelMin ?? band.min;
       dto.levelMax = dto.levelMax ?? band.max;
     }
@@ -67,11 +69,31 @@ export class MatchesService {
     if (!match) {
       throw new NotFoundException('Partido no encontrado');
     }
+
+    const joinRequests = await this.matchesRepository.listJoinRequests(id);
+    let viewerJoinStatus: string | null = null;
+    let joinRequiresApproval = false;
+
+    if (viewerUserId) {
+      const playerId = await this.matchesRepository.getPlayerIdByUserId(viewerUserId);
+      if (playerId) {
+        viewerJoinStatus = await this.matchesRepository.getPlayerMatchStatus(id, playerId);
+      }
+      joinRequiresApproval = !(await this.playerLevelFitsMatch(viewerUserId, match));
+    }
+
+    const payload = {
+      ...match,
+      join_requests: joinRequests,
+      viewer_join_status: viewerJoinStatus,
+      join_requires_approval: joinRequiresApproval,
+    };
+
     if (viewerUserId) {
       const deposit = await this.paymentsService.getDepositStatusForUser(id, viewerUserId);
-      return { ...match, deposit };
+      return { ...payload, deposit };
     }
-    return match;
+    return payload;
   }
 
   async findAll() {
@@ -84,19 +106,38 @@ export class MatchesService {
     return this.matchesRepository.listByUser(userId);
   }
 
-  private async assertPlayerLevel(userId: string, match: { level_min?: number | null; level_max?: number | null }) {
+  private async playerLevelFitsMatch(
+    userId: string,
+    match: { level_min?: number | null; level_max?: number | null },
+  ): Promise<boolean> {
     const level = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
-    if (level == null) return;
+    if (level == null) return true;
 
     const min = match.level_min != null ? Number(match.level_min) : null;
     const max = match.level_max != null ? Number(match.level_max) : null;
+    if (min == null && max == null) return true;
+    if (min != null && level < min) return false;
+    if (max != null && level > max) return false;
+    return true;
+  }
 
-    if (min != null && level < min) {
-      throw new BadRequestException(`Tu nivel (${level}/100) está por debajo del mínimo del partido (${min}/100)`);
+  private async assertCanManageJoinRequests(matchId: string, approverUserId: string) {
+    const match = await this.matchesRepository.getById(matchId);
+    if (!match) {
+      throw new NotFoundException('Partido no encontrado');
     }
-    if (max != null && level > max) {
-      throw new BadRequestException(`Tu nivel (${level}/100) supera el máximo del partido (${max}/100)`);
+
+    if (match.created_by_user_id === approverUserId) {
+      return match;
     }
+
+    const detail = await this.matchesRepository.getDetail(matchId);
+    const isParticipant = detail?.players.some((player: { id: string }) => player.id === approverUserId);
+    if (!isParticipant) {
+      throw new BadRequestException('Solo el organizador o jugadores del partido pueden gestionar solicitudes');
+    }
+
+    return match;
   }
 
   async resolveInvites(creatorUserId: string, invites?: MatchInviteDto[]) {
@@ -196,6 +237,18 @@ export class MatchesService {
     await this.matchesRepository.join(matchId, playerId, status, slotOrder);
   }
 
+  private async requestJoin(matchId: string, playerId: string) {
+    const existing = await this.matchesRepository.getPlayerMatchStatus(matchId, playerId);
+    if (existing === 'REQUESTED') {
+      throw new BadRequestException('Ya enviaste una solicitud para este partido');
+    }
+    if (existing === 'JOINED' || existing === 'CONFIRMED') {
+      throw new BadRequestException('Ya participás de este partido');
+    }
+
+    await this.matchesRepository.join(matchId, playerId, 'REQUESTED', null);
+  }
+
   private async syncMatchCapacityStatus(matchId: string) {
     const match = await this.matchesRepository.getById(matchId);
     if (!match) return;
@@ -216,17 +269,84 @@ export class MatchesService {
       throw new BadRequestException('Este partido ya no acepta jugadores');
     }
 
-    await this.assertPlayerLevel(userId, match);
-    await this.joinPlayerWithNextSlot(matchId, playerId);
-    await this.matchesRepository.createMatchChatIfMissing(matchId);
-
-    const joinedCount = await this.matchesRepository.countJoinedPlayers(matchId);
-    if (joinedCount >= match.needed_players && match.status === 'OPEN') {
-      await this.matchesRepository.updateStatus(matchId, 'FULL');
+    const fitsLevel = await this.playerLevelFitsMatch(userId, match);
+    const existingStatus = await this.matchesRepository.getPlayerMatchStatus(matchId, playerId);
+    if (existingStatus === 'REQUESTED') {
+      throw new BadRequestException('Ya enviaste una solicitud para este partido');
+    }
+    if (existingStatus === 'JOINED' || existingStatus === 'CONFIRMED') {
+      throw new BadRequestException('Ya participás de este partido');
     }
 
-    const updated = await this.findOne(matchId);
-    this.realtimeGateway.emitMatchJoined({ matchId, userId });
+    if (fitsLevel) {
+      await this.joinPlayerWithNextSlot(matchId, playerId);
+      await this.matchesRepository.createMatchChatIfMissing(matchId);
+
+      const joinedCount = await this.matchesRepository.countJoinedPlayers(matchId);
+      if (joinedCount >= match.needed_players && match.status === 'OPEN') {
+        await this.matchesRepository.updateStatus(matchId, 'FULL');
+      }
+    } else {
+      await this.requestJoin(matchId, playerId);
+    }
+
+    const updated = await this.findOne(matchId, userId);
+    if (fitsLevel) {
+      this.realtimeGateway.emitMatchJoined({ matchId, userId });
+    }
+    this.realtimeGateway.emitMatchUpdated(updated);
+    return updated;
+  }
+
+  async acceptJoinRequest(matchId: string, requestUserId: string, approverUserId: string) {
+    await this.assertCanManageJoinRequests(matchId, approverUserId);
+
+    const match = await this.matchesRepository.getById(matchId);
+    if (!match || !['OPEN', 'FULL'].includes(match.status)) {
+      throw new BadRequestException('Este partido ya no acepta jugadores');
+    }
+
+    const requestPlayerId = await this.matchesRepository.getPlayerIdByUserId(requestUserId);
+    if (!requestPlayerId) {
+      throw new BadRequestException('Jugador no encontrado');
+    }
+
+    const requestStatus = await this.matchesRepository.getPlayerMatchStatus(matchId, requestPlayerId);
+    if (requestStatus !== 'REQUESTED') {
+      throw new BadRequestException('No hay una solicitud pendiente de este jugador');
+    }
+
+    const slotOrder = await this.nextAvailableSlotOrder(matchId);
+    if (slotOrder == null) {
+      throw new BadRequestException('El partido ya no tiene cupos disponibles');
+    }
+
+    await this.matchesRepository.join(matchId, requestPlayerId, 'JOINED', slotOrder);
+    await this.matchesRepository.createMatchChatIfMissing(matchId);
+    await this.syncMatchCapacityStatus(matchId);
+
+    const updated = await this.findOne(matchId, approverUserId);
+    this.realtimeGateway.emitMatchJoined({ matchId, userId: requestUserId });
+    this.realtimeGateway.emitMatchUpdated(updated);
+    return updated;
+  }
+
+  async rejectJoinRequest(matchId: string, requestUserId: string, approverUserId: string) {
+    await this.assertCanManageJoinRequests(matchId, approverUserId);
+
+    const requestPlayerId = await this.matchesRepository.getPlayerIdByUserId(requestUserId);
+    if (!requestPlayerId) {
+      throw new BadRequestException('Jugador no encontrado');
+    }
+
+    const requestStatus = await this.matchesRepository.getPlayerMatchStatus(matchId, requestPlayerId);
+    if (requestStatus !== 'REQUESTED') {
+      throw new BadRequestException('No hay una solicitud pendiente de este jugador');
+    }
+
+    await this.matchesRepository.leave(matchId, requestPlayerId);
+
+    const updated = await this.findOne(matchId, approverUserId);
     this.realtimeGateway.emitMatchUpdated(updated);
     return updated;
   }
@@ -441,6 +561,7 @@ export class MatchesService {
     await this.clubPointsService.awardForFinishedMatch(matchId, winnerTeam);
     await this.competitiveScoringService.awardForFinishedMatch(matchId);
     await this.applyMatchRatings(matchId, winnerTeam);
+    await this.badgesService.evaluateForFinishedMatch(matchId);
     const detail = await this.findOne(matchId);
     this.realtimeGateway.emitMatchUpdated(detail);
     return true;

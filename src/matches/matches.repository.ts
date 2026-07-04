@@ -239,7 +239,7 @@ export class MatchesRepository {
        FROM matches m
        INNER JOIN players p ON p.user_id = $1
        INNER JOIN match_players mp ON mp.player_id = p.id AND mp.match_id = m.id
-       WHERE mp.status IN ('JOINED', 'CONFIRMED')
+       WHERE mp.status IN ('JOINED', 'CONFIRMED', 'REQUESTED')
        ORDER BY m.date ASC`,
       [userId],
     );
@@ -260,17 +260,57 @@ export class MatchesRepository {
   async join(
     matchId: string,
     playerId: string,
-    status: 'JOINED' | 'CONFIRMED' = 'JOINED',
-    slotOrder?: number,
+    status: 'JOINED' | 'CONFIRMED' | 'REQUESTED' = 'JOINED',
+    slotOrder?: number | null,
   ) {
     await this.db.query(
       `INSERT INTO match_players (match_id, player_id, status, slot_order)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (match_id, player_id)
        DO UPDATE SET status = EXCLUDED.status,
-                     slot_order = COALESCE(EXCLUDED.slot_order, match_players.slot_order)`,
+                     slot_order = CASE
+                       WHEN EXCLUDED.status = 'REQUESTED' THEN NULL
+                       ELSE COALESCE(EXCLUDED.slot_order, match_players.slot_order)
+                     END`,
       [matchId, playerId, status, slotOrder ?? null],
     );
+  }
+
+  async getPlayerMatchStatus(matchId: string, playerId: string): Promise<string | null> {
+    const result = await this.db.query(
+      `SELECT status FROM match_players WHERE match_id = $1 AND player_id = $2`,
+      [matchId, playerId],
+    );
+    return result.rows[0]?.status ?? null;
+  }
+
+  async listJoinRequests(matchId: string) {
+    const result = await this.db.query(
+      `SELECT p.id AS player_id,
+              p.user_id,
+              u.name,
+              p.level,
+              p.rating,
+              p.photo_url,
+              mp.created_at AS requested_at
+       FROM match_players mp
+       INNER JOIN players p ON p.id = mp.player_id
+       INNER JOIN users u ON u.id = p.user_id
+       WHERE mp.match_id = $1 AND mp.status = 'REQUESTED'
+       ORDER BY mp.created_at ASC`,
+      [matchId],
+    );
+
+    return result.rows.map((row) => ({
+      userId: row.user_id,
+      playerId: row.player_id,
+      name: row.name,
+      level: row.level != null ? Number(row.level) : null,
+      rating: row.rating != null ? Number(row.rating) : null,
+      skillScore: ratingToSkillScore(resolvePlayerRating(row)),
+      photo: row.photo_url,
+      requestedAt: row.requested_at,
+    }));
   }
 
   async addGuestInvite(input: {

@@ -1,8 +1,8 @@
 export const DEFAULT_PLAYER_RATING = 1000;
 export const ELO_K_FACTOR = 24;
-export const DEFAULT_SKILL_SCORE = 40;
+export const DEFAULT_SKILL_SCORE = 400;
 export const MIN_VISIBLE_SKILL_SCORE = 0;
-export const MAX_VISIBLE_SKILL_SCORE = 100;
+export const MAX_VISIBLE_SKILL_SCORE = 1000;
 
 export const PLAYER_CATEGORIES = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'] as const;
 export type PlayerCategory = (typeof PLAYER_CATEGORIES)[number];
@@ -20,14 +20,14 @@ const CATEGORY_TO_INITIAL_RATING: Record<PlayerCategory, number> = {
 
 const RATING_SKILL_ANCHORS = [
   { rating: 500, skill: 0 },
-  { rating: 600, skill: 16 },
-  { rating: 800, skill: 28 },
-  { rating: 1000, skill: 40 },
-  { rating: 1200, skill: 52 },
-  { rating: 1400, skill: 64 },
-  { rating: 1700, skill: 76 },
-  { rating: 2000, skill: 88 },
-  { rating: 2200, skill: 100 },
+  { rating: 600, skill: 160 },
+  { rating: 800, skill: 280 },
+  { rating: 1000, skill: 400 },
+  { rating: 1200, skill: 520 },
+  { rating: 1400, skill: 640 },
+  { rating: 1700, skill: 760 },
+  { rating: 2000, skill: 880 },
+  { rating: 2200, skill: 1000 },
 ] as const;
 
 function clamp(value: number, min: number, max: number) {

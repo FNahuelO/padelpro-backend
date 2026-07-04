@@ -20,9 +20,15 @@ export class CompetitiveScoringController {
   getLeaderboard(
     @Query('month') month?: string,
     @Query('category') category?: string,
+    @Query('gender') gender?: string,
     @Query('limit') limit?: string,
   ) {
     const parsedLimit = limit ? Math.min(parseInt(limit, 10) || 50, 100) : 50;
-    return this.competitiveScoringService.getMonthlyLeaderboard(month, category, parsedLimit);
+    return this.competitiveScoringService.getMonthlyLeaderboard(
+      month,
+      category,
+      gender,
+      parsedLimit,
+    );
   }
 }

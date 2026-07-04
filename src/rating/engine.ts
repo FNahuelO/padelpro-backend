@@ -1,4 +1,5 @@
 import { computeEloDelta } from '../common/utils/player-rating.util';
+import { COMPETITIVE_MIN_WIN_POINTS } from '../common/utils/category-scoring.util';
 import { userTeamFromRank } from '../common/utils/match-result.util';
 
 export const RATING_REPEAT_WINDOW_DAYS = 30;
@@ -143,6 +144,7 @@ export function computeMatchRatingChanges(input: {
 export function applyNoveltyToCompetitivePoints(basePoints: number, priorEncounters: number): number {
   if (basePoints === 0) return 0;
   const adjusted = Math.round(basePoints * noveltyFactor(priorEncounters));
-  if (basePoints > 0) return Math.max(1, adjusted);
-  return Math.min(-1, adjusted);
+  const minMagnitude = Math.max(10, Math.round(COMPETITIVE_MIN_WIN_POINTS / 5));
+  if (basePoints > 0) return Math.max(minMagnitude, adjusted);
+  return Math.min(-minMagnitude, adjusted);
 }

@@ -4,8 +4,8 @@ import {
   type CompetitiveMatchOutcome,
   computeCompetitiveMatchPoints,
 } from '../common/utils/category-scoring.util';
-import { getLevelCategory, getMonthKey } from '../common/utils';
-import { levelToRating } from '../common/utils/player-rating.util';
+import { getCategoryRatingRange, getLevelCategory, getMonthKey } from '../common/utils';
+import { resolvePlayerRating, ratingToSkillScore } from '../common/utils/player-rating.util';
 import { DatabaseService } from '../database/database.service';
 import { applyNoveltyToCompetitivePoints, splitParticipantsByTeam } from '../rating/engine';
 import { countRecentTeamMatchups } from '../rating/matchup-history';
@@ -13,6 +13,7 @@ import { countRecentTeamMatchups } from '../rating/matchup-history';
 type MatchParticipant = {
   userId: string;
   level: number | null;
+  rating: number | null;
   rnk: number;
 };
 
@@ -68,7 +69,7 @@ export class CompetitiveScoringService {
     if (already.rows[0]) return;
 
     const playersRes = await this.db.query(
-      `SELECT p.user_id, p.level,
+      `SELECT p.user_id, p.level, p.rating,
               ROW_NUMBER() OVER (ORDER BY mp.created_at) AS rnk
        FROM match_players mp
        INNER JOIN players p ON p.id = mp.player_id
@@ -79,6 +80,7 @@ export class CompetitiveScoringService {
     const participants: MatchParticipant[] = playersRes.rows.map((row) => ({
       userId: row.user_id,
       level: row.level != null ? Number(row.level) : null,
+      rating: row.rating != null ? Number(row.rating) : null,
       rnk: Number(row.rnk),
     }));
 
@@ -102,14 +104,19 @@ export class CompetitiveScoringService {
 
     for (const player of participants) {
       const myTeam = userTeamFromRank(player.rnk, neededPlayers);
-      const myCategory = getLevelCategory(levelToRating(player.level));
+      const playerRating = resolvePlayerRating({ rating: player.rating, level: player.level });
+      const mySkill = ratingToSkillScore(playerRating);
+      const myCategory = getLevelCategory(playerRating);
 
       const opponents = participants
         .filter((p) => p.userId !== player.userId)
         .filter((p) => userTeamFromRank(p.rnk, neededPlayers) !== myTeam);
 
+      const opponentSkills = opponents.map((o) =>
+        ratingToSkillScore(resolvePlayerRating({ rating: o.rating, level: o.level })),
+      );
       const opponentCategories = opponents.map((o) =>
-        getLevelCategory(levelToRating(o.level)),
+        getLevelCategory(resolvePlayerRating({ rating: o.rating, level: o.level })),
       );
 
       const outcome = matchOutcomeForPlayer(
@@ -118,7 +125,7 @@ export class CompetitiveScoringService {
         match.score,
       );
       const points = applyNoveltyToCompetitivePoints(
-        computeCompetitiveMatchPoints(myCategory, opponentCategories, outcome),
+        computeCompetitiveMatchPoints(mySkill, opponentSkills, outcome),
         priorEncounters,
       );
 
@@ -163,8 +170,11 @@ export class CompetitiveScoringService {
       [userId, key],
     );
     const row = result.rows[0];
-    const levelRes = await this.db.query(`SELECT level FROM players WHERE user_id = $1`, [userId]);
-    const category = getLevelCategory(levelToRating(levelRes.rows[0]?.level));
+    const levelRes = await this.db.query(
+      `SELECT level, rating FROM players WHERE user_id = $1`,
+      [userId],
+    );
+    const category = getLevelCategory(resolvePlayerRating(levelRes.rows[0] ?? {}));
 
     return {
       monthKey: key,
@@ -174,22 +184,54 @@ export class CompetitiveScoringService {
     };
   }
 
-  async getMonthlyLeaderboard(monthKey?: string, category?: string, limit = 50) {
+  async getMonthlyLeaderboard(
+    monthKey?: string,
+    category?: string,
+    gender?: string,
+    limit = 50,
+  ) {
     const key = monthKey ?? getMonthKey();
+    const categoryRange = category ? getCategoryRatingRange(category) : null;
+    const genderFilter = this.normalizeGenderFilter(gender);
+
+    const params: Array<string | number> = [key];
+    const conditions = ['pcm.month_key = $1'];
+
+    if (categoryRange) {
+      const minParam = params.length + 1;
+      params.push(categoryRange.min);
+      const maxParam = params.length + 1;
+      params.push(categoryRange.max);
+      const ratingExpr = `CASE
+        WHEN p.rating IS NOT NULL THEN ROUND(p.rating::numeric)
+        ELSE ROUND(1000 + (COALESCE(p.level, 2.5) - 2.5) * 80)
+      END`;
+      conditions.push(`${ratingExpr} >= $${minParam}`);
+      conditions.push(`${ratingExpr} <= $${maxParam}`);
+    }
+
+    if (genderFilter) {
+      params.push(genderFilter);
+      conditions.push(`COALESCE(p.extras->>'gender', '') = $${params.length}`);
+    }
+
+    params.push(limit);
+    const limitParam = `$${params.length}`;
+
     const result = await this.db.query(
-      `SELECT u.id AS user_id, u.name, p.photo_url, p.level,
+      `SELECT u.id AS user_id, u.name, p.photo_url, p.level, p.rating,
               pcm.points, pcm.matches_played
        FROM player_competitive_monthly_points pcm
        INNER JOIN users u ON u.id = pcm.user_id
        INNER JOIN players p ON p.user_id = u.id
-       WHERE pcm.month_key = $1
+       WHERE ${conditions.join(' AND ')}
        ORDER BY pcm.points DESC, pcm.matches_played DESC
-       LIMIT $2`,
-      [key, limit],
+       LIMIT ${limitParam}`,
+      params,
     );
 
-    let entries = result.rows.map((row, index) => {
-      const rating = levelToRating(row.level);
+    const entries = result.rows.map((row, index) => {
+      const rating = resolvePlayerRating({ rating: row.rating, level: row.level });
       const levelCategory = getLevelCategory(rating);
       return {
         position: index + 1,
@@ -204,12 +246,19 @@ export class CompetitiveScoringService {
       };
     });
 
-    if (category) {
-      entries = entries
-        .filter((e) => e.levelCategory === category)
-        .map((e, i) => ({ ...e, position: i + 1 }));
-    }
+    return {
+      monthKey: key,
+      category: category ?? null,
+      gender: genderFilter ?? null,
+      entries,
+    };
+  }
 
-    return { monthKey: key, category: category ?? null, entries };
+  private normalizeGenderFilter(gender?: string): string | null {
+    const value = gender?.trim().toLowerCase();
+    if (!value || value === 'mixed' || value === 'mixto') return null;
+    if (value === 'male' || value === 'masculino' || value === 'hombre') return 'Masculino';
+    if (value === 'female' || value === 'femenino' || value === 'mujer') return 'Femenino';
+    return null;
   }
 }

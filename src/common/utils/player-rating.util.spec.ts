@@ -18,10 +18,10 @@ describe('player-rating.util', () => {
     expect(resolvePlayerRating({})).toBe(DEFAULT_PLAYER_RATING);
   });
 
-  it('convierte el rating a skill score visible de 0 a 100', () => {
+  it('convierte el rating a skill score visible de 0 a 1000', () => {
     expect(ratingToSkillScore(500)).toBe(0);
-    expect(ratingToSkillScore(1000)).toBe(40);
-    expect(ratingToSkillScore(2200)).toBe(100);
+    expect(ratingToSkillScore(1000)).toBe(400);
+    expect(ratingToSkillScore(2200)).toBe(1000);
   });
 
   it('siembra el rating inicial desde la categoría autodeclarada', () => {

@@ -6,15 +6,17 @@ import {
 import { DatabaseService } from '../database/database.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
-import { v2 as cloudinary } from 'cloudinary';
 import { getLevelCategory, getMonthKey } from '../common/utils';
 import { ratingToSkillScore, resolvePlayerRating } from '../common/utils/player-rating.util';
+import { deleteCloudinaryAsset, uploadImageBuffer } from '../common/cloudinary/cloudinary.util';
 
 type Extras = Record<string, unknown>;
 
 type MatchRow = {
   matchId: string;
   date: Date;
+  title: string;
+  clubName?: string;
   score: string;
   outcome: 'win' | 'loss' | 'draw';
   opponentNames: string[];
@@ -48,13 +50,7 @@ function tallyWL(rows: MatchRow[]) {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly db: DatabaseService) {
-    cloudinary.config({
-      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-      api_key: process.env.CLOUDINARY_API_KEY,
-      api_secret: process.env.CLOUDINARY_API_SECRET,
-    });
-  }
+  constructor(private readonly db: DatabaseService) {}
 
   private parseExtras(row: { extras?: unknown } | undefined): Extras {
     const raw = row?.extras;
@@ -209,6 +205,8 @@ export class UsersService {
       return {
         matchId: m.matchId,
         date: new Date(m.date).toISOString(),
+        title: m.title,
+        clubName: m.clubName,
         result,
         score: m.score,
         ratingChange,
@@ -225,7 +223,7 @@ export class UsersService {
       wins: wl.wins,
       losses: wl.losses,
       draws: wl.draws,
-      history: historyOut,
+      history: [...historyOut].reverse(),
     };
   }
 
@@ -272,15 +270,17 @@ export class UsersService {
   private async loadMatchRowsForUser(userId: string): Promise<MatchRow[]> {
     const res = await this.db.query(
       `WITH base AS (
-         SELECT m.id AS match_id, m.date, m.needed_players, mr.score, mr.winner_team
+         SELECT m.id AS match_id, m.date, m.title, m.needed_players, mr.score, mr.winner_team,
+                c.name AS club_name
          FROM matches m
+         LEFT JOIN clubs c ON c.id = m.club_id
          INNER JOIN match_results mr ON mr.match_id = m.id
          INNER JOIN match_players my_mp ON my_mp.match_id = m.id
          INNER JOIN players my_p ON my_p.id = my_mp.player_id AND my_p.user_id = $1
          WHERE m.status = 'FINISHED' AND my_mp.status IN ('JOINED','CONFIRMED')
        ),
        numbered AS (
-         SELECT b.match_id, b.date, b.needed_players, b.score, b.winner_team,
+         SELECT b.match_id, b.date, b.title, b.club_name, b.needed_players, b.score, b.winner_team,
                 pl.user_id AS uid, u.name AS player_name,
                 ROW_NUMBER() OVER (PARTITION BY mp.match_id ORDER BY mp.created_at) AS rnk
          FROM base b
@@ -299,6 +299,8 @@ export class UsersService {
       {
         matchId: string;
         date: Date;
+        title: string;
+        clubName?: string;
         score: string;
         winnerTeam: string;
         neededPlayers: number;
@@ -312,6 +314,8 @@ export class UsersService {
         byMatch.set(id, {
           matchId: id,
           date: row.date,
+          title: row.title || 'Partido',
+          clubName: row.club_name ?? undefined,
           score: row.score,
           winnerTeam: String(row.winner_team || '').toUpperCase(),
           neededPlayers: Number(row.needed_players) || 4,
@@ -344,6 +348,8 @@ export class UsersService {
       out.push({
         matchId: m.matchId,
         date: m.date,
+        title: m.title,
+        clubName: m.clubName,
         score: m.score,
         outcome,
         opponentNames,
@@ -389,15 +395,27 @@ export class UsersService {
 
     const bio = dto.description !== undefined ? dto.description : prow.bio;
     const city = dto.location !== undefined ? dto.location : prow.city;
+    const hasCoords = dto.latitude != null && dto.longitude != null;
 
     await this.db.query(
       `UPDATE players
        SET bio = $2,
            city = $3,
            extras = $4::jsonb,
+           latitude = CASE WHEN $5 THEN $6 ELSE latitude END,
+           longitude = CASE WHEN $5 THEN $7 ELSE longitude END,
+           location_updated_at = CASE WHEN $5 THEN NOW() ELSE location_updated_at END,
            updated_at = NOW()
        WHERE user_id = $1`,
-      [userId, bio, city, JSON.stringify(extras)],
+      [
+        userId,
+        bio,
+        city,
+        JSON.stringify(extras),
+        hasCoords,
+        hasCoords ? dto.latitude : null,
+        hasCoords ? dto.longitude : null,
+      ],
     );
 
     return this.getProfile(userId);
@@ -432,18 +450,18 @@ export class UsersService {
   }
 
   async uploadAvatar(userId: string, file: Express.Multer.File) {
-    if (!process.env.CLOUDINARY_CLOUD_NAME) {
-      throw new BadRequestException('Cloudinary no está configurado');
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    if (!allowed.includes(file.mimetype)) {
+      throw new BadRequestException('Formato de imagen no soportado. Usá JPG, PNG o WEBP.');
     }
 
-    const b64 = file.buffer.toString('base64');
-    const dataUri = `data:${file.mimetype};base64,${b64}`;
+    const current = await this.db.query(
+      `SELECT photo_url FROM players WHERE user_id = $1`,
+      [userId],
+    );
+    const previousPhotoUrl = current.rows[0]?.photo_url as string | undefined;
 
-    const upload = await cloudinary.uploader.upload(dataUri, {
-      folder: `playtomic-clone/avatars/${userId}`,
-      resource_type: 'image',
-      transformation: [{ width: 800, crop: 'limit' }, { quality: 'auto' }],
-    });
+    const upload = await uploadImageBuffer(file, `playtomic-clone/avatars/${userId}`);
 
     await this.ensurePlayerProfile(userId);
 
@@ -451,6 +469,10 @@ export class UsersService {
       `UPDATE players SET photo_url = $2, updated_at = NOW() WHERE user_id = $1`,
       [userId, upload.secure_url],
     );
+
+    if (previousPhotoUrl && previousPhotoUrl !== upload.secure_url) {
+      await deleteCloudinaryAsset(previousPhotoUrl);
+    }
 
     return { photo: upload.secure_url };
   }

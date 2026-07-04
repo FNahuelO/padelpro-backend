@@ -39,7 +39,7 @@ export class MatchmakingService {
 
     if (levelMin == null || levelMax == null) {
       const playerLevel = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
-      const band = defaultLevelBand(playerLevel ?? 40);
+      const band = defaultLevelBand(playerLevel ?? 400);
       levelMin = levelMin ?? band.min;
       levelMax = levelMax ?? band.max;
     }

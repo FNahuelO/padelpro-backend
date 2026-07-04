@@ -34,6 +34,15 @@ export class PlayersController {
     return this.playersService.search(q, user.sub);
   }
 
+  @Get(':id/match-history')
+  getMatchHistory(@Param('id') id: string, @Query('limit') limit?: string) {
+    const l = limit ? parseInt(limit, 10) : undefined;
+    if (l !== undefined && (Number.isNaN(l) || l < 0)) {
+      return this.playersService.getMatchHistory(id, undefined);
+    }
+    return this.playersService.getMatchHistory(id, l);
+  }
+
   @Get(':id')
   getById(@Param('id') id: string) {
     return this.playersService.getById(id);

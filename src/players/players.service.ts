@@ -62,6 +62,17 @@ export class PlayersService {
     };
   }
 
+  async getMatchHistory(playerId: string, limit?: number) {
+    let player = await this.playersRepository.getById(playerId);
+    if (!player) {
+      player = await this.playersRepository.getByUserId(playerId);
+    }
+    if (!player) {
+      throw new NotFoundException('Jugador no encontrado');
+    }
+    return this.usersService.getMatchHistory(player.user_id, limit);
+  }
+
   async search(query: string | undefined, excludeUserId: string) {
     const q = query?.trim() ?? '';
     if (q.length < 2) {

@@ -163,6 +163,11 @@ export class CreateRegistrationDto {
   @IsOptional()
   @IsString()
   category?: string;
+
+  // El organizador inscribe a la pareja en nombre de otros (no juega él mismo)
+  @IsOptional()
+  @IsBoolean()
+  onBehalf?: boolean;
 }
 
 export class CreateTournamentMatchDto {
