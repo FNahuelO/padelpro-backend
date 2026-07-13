@@ -301,12 +301,17 @@ async function main() {
     );
 
     await pool.query(
-      `INSERT INTO players (user_id, nickname, city, zone, level, position)
-       VALUES ($1, 'FrancoClub', 'CABA', 'Palermo', 4.0, 'ambos')
+      `INSERT INTO players (
+         user_id, nickname, city, zone, level, position,
+         category_status, placement_matches_played
+       )
+       VALUES ($1, 'FrancoClub', 'CABA', 'Palermo', 4.0, 'ambos', 'confirmed', 5)
        ON CONFLICT (user_id) DO UPDATE SET
          nickname = EXCLUDED.nickname,
          city = EXCLUDED.city,
          zone = EXCLUDED.zone,
+         category_status = 'confirmed',
+         placement_matches_played = GREATEST(players.placement_matches_played, 5),
          updated_at = NOW()`,
       [CLUB_ADMIN_ID],
     );

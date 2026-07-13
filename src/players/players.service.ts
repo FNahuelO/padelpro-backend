@@ -1,5 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { getLevelCategory, resolvePlayerRating } from '../common/utils';
+import {
+  normalizeCategoryStatus,
+  PLACEMENT_MATCHES_REQUIRED,
+  resolvePlayerRating,
+  resolveVisibleLevelCategory,
+} from '../common/utils';
 import { ratingToSkillScore } from '../common/utils/player-rating.util';
 import { UsersService } from '../users/users.service';
 import { UpdatePlayerDto } from './dto/update-player.dto';
@@ -19,14 +24,29 @@ export class PlayersService {
       player.extras && typeof player.extras === 'object' && !Array.isArray(player.extras)
         ? player.extras
         : {};
+    const declaredCategory =
+      typeof extras.declaredCategory === 'string' ? extras.declaredCategory : undefined;
+    const categoryStatus = normalizeCategoryStatus(
+      player.category_status ?? player.categoryStatus,
+    );
+    const placementMatchesPlayed = Number(
+      player.placement_matches_played ?? player.placementMatchesPlayed ?? 0,
+    );
     return {
       ...player,
       rating,
       skillScore: ratingToSkillScore(rating),
       level: player.level != null ? Number(player.level) : null,
-      levelCategory: player.levelCategory ?? player.level_category ?? getLevelCategory(rating),
-      declaredCategory:
-        typeof extras.declaredCategory === 'string' ? extras.declaredCategory : undefined,
+      levelCategory: resolveVisibleLevelCategory({
+        rating,
+        categoryStatus,
+        declaredCategory,
+      }),
+      declaredCategory,
+      categoryStatus,
+      placementMatchesPlayed,
+      placementMatchesRequired: PLACEMENT_MATCHES_REQUIRED,
+      gender: typeof extras.gender === 'string' ? extras.gender : undefined,
     };
   }
 

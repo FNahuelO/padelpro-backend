@@ -84,6 +84,11 @@ export class MatchesController {
     return this.matchesService.leaveMatch(id, user.sub);
   }
 
+  @Post(':id/cancel')
+  cancelMatch(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.matchesService.cancelMatch(id, user.sub);
+  }
+
   @Post(':id/confirm')
   confirmMatch(@Param('id') id: string, @CurrentUser() user: any) {
     return this.matchesService.confirmMatch(id, user.sub);

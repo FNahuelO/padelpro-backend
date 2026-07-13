@@ -17,6 +17,15 @@ import { CreateCourtSlotDto } from './dto/create-court-slot.dto';
 import { UpdateCourtSlotDto } from './dto/update-court-slot.dto';
 import { UpdateClubDto } from './dto/update-club.dto';
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function assertClubId(id: string): void {
+  if (!id || id === 'undefined' || id === 'null' || !UUID_RE.test(id)) {
+    throw new BadRequestException('ID de club inválido');
+  }
+}
+
 @Injectable()
 export class ClubsService {
   constructor(private readonly db: DatabaseService) {}
@@ -31,7 +40,89 @@ export class ClubsService {
     return result.rows;
   }
 
+  /**
+   * Clubs con al menos un turno OPEN que se solapa con la franja pedida.
+   */
+  async findAvailableForWindow(date: string, startHour: number, endHour: number) {
+    if (!date || Number.isNaN(startHour) || Number.isNaN(endHour) || startHour >= endHour) {
+      throw new BadRequestException('Fecha y franja horaria inválidas');
+    }
+
+    await this.db.query(
+      `UPDATE court_availability_slots
+       SET status = 'CANCELLED'
+       WHERE status = 'OPEN' AND ${COURT_SLOT_END_AT_SQL} < NOW()`,
+    );
+
+    const result = await this.db.query(
+      `SELECT c.id,
+              c.name,
+              c.city,
+              c.zone,
+              c.address,
+              cas.id AS slot_id,
+              cas.court_label,
+              cas.start_hour,
+              cas.end_hour,
+              cas.bonus_points
+       FROM clubs c
+       INNER JOIN court_availability_slots cas ON cas.club_id = c.id
+       WHERE cas.status = 'OPEN'
+         AND cas.slot_date = $1::date
+         AND cas.start_hour < $3
+         AND cas.end_hour > $2
+       ORDER BY c.name ASC, cas.start_hour ASC, cas.court_label ASC`,
+      [date, startHour, endHour],
+    );
+
+    const byClub = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        city?: string;
+        zone?: string;
+        address?: string;
+        openSlots: number;
+        slots: {
+          id: string;
+          courtLabel: string;
+          startHour: number;
+          endHour: number;
+          bonusPoints: number;
+        }[];
+      }
+    >();
+
+    for (const row of result.rows) {
+      let club = byClub.get(row.id);
+      if (!club) {
+        club = {
+          id: row.id,
+          name: row.name,
+          city: row.city ?? undefined,
+          zone: row.zone ?? undefined,
+          address: row.address ?? undefined,
+          openSlots: 0,
+          slots: [],
+        };
+        byClub.set(row.id, club);
+      }
+      club.openSlots += 1;
+      club.slots.push({
+        id: row.slot_id,
+        courtLabel: row.court_label,
+        startHour: Number(row.start_hour),
+        endHour: Number(row.end_hour),
+        bonusPoints: Number(row.bonus_points ?? 0),
+      });
+    }
+
+    return Array.from(byClub.values());
+  }
+
   async findOne(id: string) {
+    assertClubId(id);
     const result = await this.db.query(
       `SELECT id, name, city, zone, address, phone, logo_url, latitude, longitude,
               subscription_plan, created_at, updated_at

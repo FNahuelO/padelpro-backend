@@ -14,6 +14,9 @@ export {
   MAX_VISIBLE_SKILL_SCORE,
   MIN_VISIBLE_SKILL_SCORE,
   ELO_K_FACTOR,
+  PLACEMENT_INITIAL_RATING,
+  PLACEMENT_MATCHES_REQUIRED,
+  PLACEMENT_ELO_K_FACTOR,
   levelToRating,
   normalizeSkillScore,
   ratingToSkillScore,
@@ -21,6 +24,7 @@ export {
   getInitialRatingForCategory,
   PLAYER_CATEGORIES,
   type PlayerCategory,
+  type CategoryStatus,
   expectedScore,
   computeEloDelta,
 } from './player-rating.util';
@@ -33,4 +37,15 @@ export {
   computeCompetitiveMatchPoints,
   type CompetitiveMatchOutcome,
 } from './category-scoring.util';
+export {
+  normalizeCategoryStatus,
+  resolveVisibleLevelCategory,
+  isPlacementComplete,
+} from './placement.util';
+export {
+  normalizeBinaryGender,
+  resolveMatchGenderFromPartner,
+  type MatchGender,
+  type BinaryGender,
+} from './match-gender.util';
 

@@ -4,7 +4,7 @@ import {
   type CompetitiveMatchOutcome,
   computeCompetitiveMatchPoints,
 } from '../common/utils/category-scoring.util';
-import { getCategoryRatingRange, getLevelCategory, getMonthKey } from '../common/utils';
+import { getCategoryRatingRange, getLevelCategory, getMonthKey, resolveVisibleLevelCategory } from '../common/utils';
 import { resolvePlayerRating, ratingToSkillScore } from '../common/utils/player-rating.util';
 import { DatabaseService } from '../database/database.service';
 import { applyNoveltyToCompetitivePoints, splitParticipantsByTeam } from '../rating/engine';
@@ -15,6 +15,7 @@ type MatchParticipant = {
   level: number | null;
   rating: number | null;
   rnk: number;
+  categoryStatus: string;
 };
 
 function userTeamFromRank(rnk: number, neededPlayers: number): 'A' | 'B' {
@@ -69,7 +70,7 @@ export class CompetitiveScoringService {
     if (already.rows[0]) return;
 
     const playersRes = await this.db.query(
-      `SELECT p.user_id, p.level, p.rating,
+      `SELECT p.user_id, p.level, p.rating, p.category_status,
               ROW_NUMBER() OVER (ORDER BY mp.created_at) AS rnk
        FROM match_players mp
        INNER JOIN players p ON p.id = mp.player_id
@@ -82,6 +83,7 @@ export class CompetitiveScoringService {
       level: row.level != null ? Number(row.level) : null,
       rating: row.rating != null ? Number(row.rating) : null,
       rnk: Number(row.rnk),
+      categoryStatus: (row.category_status as string) ?? 'confirmed',
     }));
 
     if (participants.length < 2) return;
@@ -103,6 +105,7 @@ export class CompetitiveScoringService {
         : 0;
 
     for (const player of participants) {
+      if (player.categoryStatus === 'provisional') continue;
       const myTeam = userTeamFromRank(player.rnk, neededPlayers);
       const playerRating = resolvePlayerRating({ rating: player.rating, level: player.level });
       const mySkill = ratingToSkillScore(playerRating);
@@ -171,10 +174,20 @@ export class CompetitiveScoringService {
     );
     const row = result.rows[0];
     const levelRes = await this.db.query(
-      `SELECT level, rating FROM players WHERE user_id = $1`,
+      `SELECT level, rating, category_status, extras FROM players WHERE user_id = $1`,
       [userId],
     );
-    const category = getLevelCategory(resolvePlayerRating(levelRes.rows[0] ?? {}));
+    const playerRow = levelRes.rows[0] ?? {};
+    const extras =
+      playerRow.extras && typeof playerRow.extras === 'object' && !Array.isArray(playerRow.extras)
+        ? playerRow.extras
+        : {};
+    const rating = resolvePlayerRating(playerRow);
+    const category = resolveVisibleLevelCategory({
+      rating,
+      categoryStatus: playerRow.category_status,
+      declaredCategory: typeof extras.declaredCategory === 'string' ? extras.declaredCategory : null,
+    });
 
     return {
       monthKey: key,
@@ -225,6 +238,7 @@ export class CompetitiveScoringService {
        INNER JOIN users u ON u.id = pcm.user_id
        INNER JOIN players p ON p.user_id = u.id
        WHERE ${conditions.join(' AND ')}
+         AND p.category_status = 'confirmed'
        ORDER BY pcm.points DESC, pcm.matches_played DESC
        LIMIT ${limitParam}`,
       params,

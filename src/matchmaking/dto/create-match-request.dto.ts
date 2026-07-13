@@ -15,19 +15,19 @@ export class CreateMatchRequestDto {
 
   @IsInt()
   @Min(0)
-  @Max(23)
+  @Max(24)
   endHour: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(100)
+  @Max(1000)
   minRating?: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(100)
+  @Max(1000)
   maxRating?: number;
 
   @IsOptional()

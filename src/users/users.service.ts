@@ -6,7 +6,12 @@ import {
 import { DatabaseService } from '../database/database.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
-import { getLevelCategory, getMonthKey } from '../common/utils';
+import {
+  normalizeCategoryStatus,
+  PLACEMENT_MATCHES_REQUIRED,
+  getMonthKey,
+  resolveVisibleLevelCategory,
+} from '../common/utils';
 import { ratingToSkillScore, resolvePlayerRating } from '../common/utils/player-rating.util';
 import { deleteCloudinaryAsset, uploadImageBuffer } from '../common/cloudinary/cloudinary.util';
 
@@ -64,7 +69,7 @@ export class UsersService {
     const res = await this.db.query(
       `SELECT u.id, u.name, u.email, u.role,
               p.id AS player_id, p.photo_url, p.city, p.zone, p.level, p.rating, p.position, p.bio, p.nickname,
-              p.extras
+              p.extras, p.category_status, p.placement_matches_played
        FROM users u
        LEFT JOIN players p ON p.user_id = u.id
        WHERE u.id = $1`,
@@ -79,6 +84,11 @@ export class UsersService {
     const prefs = (extras.preferences as Extras) || {};
     const currentRating = resolvePlayerRating(row);
     const currentSkillScore = ratingToSkillScore(currentRating);
+    const declaredCategory = (extras.declaredCategory as string) || undefined;
+    const categoryStatus =
+      row.category_status != null ? normalizeCategoryStatus(row.category_status) : undefined;
+    const placementMatchesPlayed =
+      row.placement_matches_played != null ? Number(row.placement_matches_played) : undefined;
 
     const matchStats = await this.getMatchStats(userId);
     const monthKey = getMonthKey();
@@ -89,7 +99,13 @@ export class UsersService {
     );
     const competitiveRow = competitiveMonthly.rows[0];
 
-    const mainClubId = (extras.mainClubId as string) || undefined;
+    const mainClubId =
+      typeof extras.mainClubId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        extras.mainClubId,
+      )
+        ? extras.mainClubId
+        : undefined;
     let mainClub: { id: string; name: string; zone?: string } | undefined;
     if (mainClubId) {
       const c = await this.db.query(
@@ -122,8 +138,15 @@ export class UsersService {
       location,
       rating: currentRating,
       skillScore: currentSkillScore,
-      levelCategory: getLevelCategory(currentRating),
-      declaredCategory: (extras.declaredCategory as string) || undefined,
+      levelCategory: resolveVisibleLevelCategory({
+        rating: currentRating,
+        categoryStatus,
+        declaredCategory,
+      }),
+      declaredCategory,
+      categoryStatus,
+      placementMatchesPlayed,
+      placementMatchesRequired: categoryStatus != null ? PLACEMENT_MATCHES_REQUIRED : undefined,
       mainClubId,
       mainClub,
       weeklyRankPosition: null,

@@ -4,7 +4,7 @@ import { CreateMatchDto } from './dto/create-match.dto';
 import type { ParsedBestOfThree } from '../common/utils/match-result.util';
 import type { PlayerRatingDto } from './dto/player-rating.dto';
 import { userTeamFromRank } from '../common/utils/match-result.util';
-import { ratingToSkillScore, resolvePlayerRating } from '../common/utils';
+import { ratingToSkillScore, resolvePlayerRating, resolveVisibleLevelCategory } from '../common/utils';
 import { COURT_SLOT_END_AT_SQL, MATCH_COURT_END_AT_SQL } from '../common/utils/court-schedule.util';
 import { countRecentTeamMatchups as countRecentTeamMatchupsQuery } from '../rating/matchup-history';
 
@@ -39,9 +39,9 @@ export class MatchesRepository {
   create(createdByUserId: string, dto: CreateMatchDto) {
     return this.db.query(
       `INSERT INTO matches (
-        club_id, created_by_user_id, title, description, date, zone,
-        level_min, level_max, gender, mode, needed_players, status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'OPEN')
+        club_id, created_by_user_id, title, description, date, ends_at, zone,
+        level_min, level_max, gender, mode, needed_players, court_slot_id, status
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'OPEN')
       RETURNING *`,
       [
         dto.clubId ?? null,
@@ -49,14 +49,71 @@ export class MatchesRepository {
         dto.title,
         dto.description ?? null,
         dto.date,
+        dto.endsAt ?? null,
         dto.zone ?? null,
         dto.levelMin ?? null,
         dto.levelMax ?? null,
         dto.gender,
         dto.mode,
         dto.neededPlayers,
+        dto.courtSlotId ?? null,
       ],
     );
+  }
+
+  async bookCourtSlot(slotId: string, clubId: string) {
+    await this.db.query(
+      `UPDATE court_availability_slots
+       SET status = 'BOOKED'
+       WHERE id = $1 AND club_id = $2 AND status = 'OPEN'`,
+      [slotId, clubId],
+    );
+  }
+
+  async releaseCourtSlot(slotId: string) {
+    const result = await this.db.query(
+      `UPDATE court_availability_slots
+       SET status = 'OPEN'
+       WHERE id = $1
+         AND status = 'BOOKED'
+         AND ${COURT_SLOT_END_AT_SQL} > NOW()
+       RETURNING id`,
+      [slotId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  async getUserRole(userId: string): Promise<string | null> {
+    const result = await this.db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+    return result.rows[0]?.role ?? null;
+  }
+
+  async listActiveParticipantUserIds(matchId: string): Promise<string[]> {
+    const result = await this.db.query(
+      `SELECT DISTINCT p.user_id
+       FROM match_players mp
+       INNER JOIN players p ON p.id = mp.player_id
+       WHERE mp.match_id = $1 AND mp.status IN ('JOINED', 'CONFIRMED', 'REQUESTED')`,
+      [matchId],
+    );
+    return result.rows.map((row) => String(row.user_id));
+  }
+
+  async notifyUsers(
+    userIds: string[],
+    type: string,
+    title: string,
+    body: string,
+    data: Record<string, unknown>,
+  ) {
+    const unique = [...new Set(userIds.filter(Boolean))];
+    for (const userId of unique) {
+      await this.db.query(
+        `INSERT INTO notifications (user_id, type, title, body, data)
+         VALUES ($1, $2, $3, $4, $5::jsonb)`,
+        [userId, type, title, body, JSON.stringify(data)],
+      );
+    }
   }
 
   async getById(matchId: string) {
@@ -75,6 +132,8 @@ export class MatchesRepository {
               p.level,
               p.rating,
               p.photo_url,
+              p.extras,
+              p.category_status,
               mp.status AS player_status,
               mp.slot_order
        FROM match_players mp
@@ -173,17 +232,31 @@ export class MatchesRepository {
       club,
       joined_count: joinedCount,
       needed_players: match.needed_players,
-      players: players.rows.map((p) => ({
-        id: p.user_id,
-        playerId: p.id,
-        name: p.name,
-        level: p.level != null ? Number(p.level) : null,
-        rating: p.rating != null ? Number(p.rating) : null,
-        skillScore: ratingToSkillScore(resolvePlayerRating(p)),
-        photo: p.photo_url,
-        status: p.player_status,
-        slotOrder: p.slot_order != null ? Number(p.slot_order) : undefined,
-      })),
+      players: players.rows.map((p) => {
+        const extras =
+          p.extras && typeof p.extras === 'object' && !Array.isArray(p.extras) ? p.extras : {};
+        const rating = resolvePlayerRating(p);
+        const declaredCategory =
+          typeof extras.declaredCategory === 'string' ? extras.declaredCategory : undefined;
+        return {
+          id: p.user_id,
+          playerId: p.id,
+          name: p.name,
+          level: p.level != null ? Number(p.level) : null,
+          rating,
+          skillScore: ratingToSkillScore(rating),
+          levelCategory: resolveVisibleLevelCategory({
+            rating,
+            categoryStatus: p.category_status,
+            declaredCategory,
+          }),
+          declaredCategory,
+          categoryStatus: p.category_status ?? undefined,
+          photo: p.photo_url,
+          status: p.player_status,
+          slotOrder: p.slot_order != null ? Number(p.slot_order) : undefined,
+        };
+      }),
       guest_invites: guests.rows.map((guest) => ({
         id: guest.id,
         name: guest.name,
@@ -251,10 +324,38 @@ export class MatchesRepository {
     return result.rows[0]?.id ?? null;
   }
 
+  async getGenderByUserId(userId: string): Promise<string | null> {
+    const result = await this.db.query(`SELECT extras FROM players WHERE user_id = $1`, [userId]);
+    const extras = result.rows[0]?.extras;
+    if (extras && typeof extras === 'object' && !Array.isArray(extras) && typeof extras.gender === 'string') {
+      return extras.gender;
+    }
+    return null;
+  }
+
   async getPlayerSkillScoreByUserId(userId: string) {
     const result = await this.db.query(`SELECT level, rating FROM players WHERE user_id = $1`, [userId]);
     if (!result.rows[0]) return null;
     return ratingToSkillScore(resolvePlayerRating(result.rows[0]));
+  }
+
+  async getPlayerPlacementBandByUserId(userId: string) {
+    const result = await this.db.query(
+      `SELECT level, rating, category_status, extras
+       FROM players
+       WHERE user_id = $1`,
+      [userId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const extras =
+      row.extras && typeof row.extras === 'object' && !Array.isArray(row.extras) ? row.extras : {};
+    return {
+      skillScore: ratingToSkillScore(resolvePlayerRating(row)),
+      categoryStatus: (row.category_status as string) ?? 'confirmed',
+      declaredCategory:
+        typeof extras.declaredCategory === 'string' ? extras.declaredCategory : null,
+    };
   }
 
   async join(
@@ -394,6 +495,29 @@ export class MatchesRepository {
     );
   }
 
+  async updateCreatedBy(matchId: string, userId: string) {
+    await this.db.query(
+      `UPDATE matches SET created_by_user_id = $2, updated_at = NOW() WHERE id = $1`,
+      [matchId, userId],
+    );
+  }
+
+  async getNextOrganizerCandidate(matchId: string, excludeUserId: string) {
+    const result = await this.db.query(
+      `SELECT p.user_id, u.name
+       FROM match_players mp
+       INNER JOIN players p ON p.id = mp.player_id
+       INNER JOIN users u ON u.id = p.user_id
+       WHERE mp.match_id = $1
+         AND mp.status IN ('JOINED', 'CONFIRMED')
+         AND p.user_id <> $2
+       ORDER BY COALESCE(mp.slot_order, 999), mp.created_at ASC
+       LIMIT 1`,
+      [matchId, excludeUserId],
+    );
+    return (result.rows[0] as { user_id: string; name: string } | undefined) ?? null;
+  }
+
   async countJoinedPlayers(matchId: string) {
     const result = await this.db.query(
       `SELECT COUNT(*)::int AS count
@@ -444,6 +568,7 @@ export class MatchesRepository {
       `SELECT p.user_id,
               p.level,
               p.rating,
+              p.category_status,
               COALESCE(mp.slot_order, ROW_NUMBER() OVER (ORDER BY mp.created_at)) AS rnk
        FROM match_players mp
        INNER JOIN players p ON p.id = mp.player_id
@@ -455,8 +580,25 @@ export class MatchesRepository {
       userId: row.user_id as string,
       level: row.level != null ? Number(row.level) : null,
       rating: row.rating != null ? Number(row.rating) : null,
+      categoryStatus: (row.category_status as string) ?? 'confirmed',
       rank: Number(row.rnk),
     }));
+  }
+
+  async advancePlacementForCompetitiveMatch(userIds: string[], matchesRequired: number) {
+    if (userIds.length === 0) return;
+    await this.db.query(
+      `UPDATE players
+       SET placement_matches_played = placement_matches_played + 1,
+           category_status = CASE
+             WHEN placement_matches_played + 1 >= $1 THEN 'confirmed'
+             ELSE category_status
+           END,
+           updated_at = NOW()
+       WHERE user_id = ANY($2::uuid[])
+         AND category_status = 'provisional'`,
+      [matchesRequired, userIds],
+    );
   }
 
   async proposeResult(matchId: string, userId: string, parsed: ParsedBestOfThree) {

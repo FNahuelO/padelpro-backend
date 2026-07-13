@@ -34,7 +34,7 @@ export class MatchmakingController {
     @Param('id') id: string,
     @Body() dto: RunMatchmakingDto,
   ) {
-    return this.matchmakingService.runMatchmaking(id, user.sub, dto.invites);
+    return this.matchmakingService.runMatchmaking(id, user.sub, dto.invites, dto.mode, dto.gender);
   }
 
   @Get('me')

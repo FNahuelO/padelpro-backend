@@ -15,7 +15,17 @@ type MatchRow = {
   status: string;
   title: string;
   court_slot_id?: string | null;
+  created_at?: Date | string;
 };
+
+export type DepositSettlementPolicy = {
+  withinFreeWindow: boolean;
+  refunded: number;
+  retained: number;
+  cancelledPending: number;
+};
+
+export const FREE_CANCEL_WINDOW_MS = 30 * 60 * 1000;
 
 @Injectable()
 export class PaymentsService {
@@ -385,5 +395,104 @@ export class PaymentsService {
     if (!deposit || deposit.status !== 'APPROVED') {
       throw new BadRequestException('Debés pagar la seña de la cancha antes de confirmar');
     }
+  }
+
+  isWithinFreeCancelWindow(matchCreatedAt: Date | string | null | undefined): boolean {
+    if (!matchCreatedAt) return false;
+    const createdMs = new Date(matchCreatedAt).getTime();
+    if (Number.isNaN(createdMs)) return false;
+    return Date.now() - createdMs < FREE_CANCEL_WINDOW_MS;
+  }
+
+  private async refundMercadoPagoPayment(providerPaymentId: string): Promise<boolean> {
+    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN?.trim();
+    if (!accessToken) return false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { MercadoPagoConfig, PaymentRefund } = require('mercadopago');
+      const client = new MercadoPagoConfig({ accessToken });
+      const refundClient = new PaymentRefund(client);
+      await refundClient.create({ payment_id: providerPaymentId });
+      return true;
+    } catch (err) {
+      this.logger.error(`Refund Mercado Pago falló (${providerPaymentId})`, err);
+      return false;
+    }
+  }
+
+  private async settleSingleDeposit(
+    deposit: { id: string; status: string; provider: string; provider_payment_id: string | null },
+    withinFreeWindow: boolean,
+  ): Promise<'refunded' | 'retained' | 'cancelled_pending' | 'ignored'> {
+    if (deposit.status === 'PENDING') {
+      await this.paymentsRepo.markCancelled(deposit.id);
+      return 'cancelled_pending';
+    }
+
+    if (deposit.status !== 'APPROVED') {
+      return 'ignored';
+    }
+
+    if (!withinFreeWindow) {
+      return 'retained';
+    }
+
+    if (!this.isMockMode() && deposit.provider === 'MERCADOPAGO' && deposit.provider_payment_id) {
+      const ok = await this.refundMercadoPagoPayment(String(deposit.provider_payment_id));
+      if (!ok) {
+        this.logger.warn(
+          `Seña ${deposit.id} queda APPROVED: no se pudo reembolsar en Mercado Pago`,
+        );
+        return 'retained';
+      }
+    }
+
+    await this.paymentsRepo.markRefunded(deposit.id);
+    return 'refunded';
+  }
+
+  async settleDepositOnLeave(
+    matchId: string,
+    playerId: string,
+    matchCreatedAt: Date | string | null | undefined,
+  ): Promise<DepositSettlementPolicy> {
+    const withinFreeWindow = this.isWithinFreeCancelWindow(matchCreatedAt);
+    const policy: DepositSettlementPolicy = {
+      withinFreeWindow,
+      refunded: 0,
+      retained: 0,
+      cancelledPending: 0,
+    };
+
+    const deposit = await this.paymentsRepo.getDepositByMatchPlayer(matchId, playerId);
+    if (!deposit) return policy;
+
+    const result = await this.settleSingleDeposit(deposit, withinFreeWindow);
+    if (result === 'refunded') policy.refunded += 1;
+    if (result === 'retained') policy.retained += 1;
+    if (result === 'cancelled_pending') policy.cancelledPending += 1;
+    return policy;
+  }
+
+  async settleMatchDepositsOnCancel(
+    matchId: string,
+    matchCreatedAt: Date | string | null | undefined,
+  ): Promise<DepositSettlementPolicy> {
+    const withinFreeWindow = this.isWithinFreeCancelWindow(matchCreatedAt);
+    const policy: DepositSettlementPolicy = {
+      withinFreeWindow,
+      refunded: 0,
+      retained: 0,
+      cancelledPending: 0,
+    };
+
+    const deposits = await this.paymentsRepo.listDepositsForMatch(matchId);
+    for (const deposit of deposits) {
+      const result = await this.settleSingleDeposit(deposit, withinFreeWindow);
+      if (result === 'refunded') policy.refunded += 1;
+      if (result === 'retained') policy.retained += 1;
+      if (result === 'cancelled_pending') policy.cancelledPending += 1;
+    }
+    return policy;
   }
 }

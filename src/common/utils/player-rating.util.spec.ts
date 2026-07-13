@@ -24,9 +24,13 @@ describe('player-rating.util', () => {
     expect(ratingToSkillScore(2200)).toBe(1000);
   });
 
-  it('siembra el rating inicial desde la categoría autodeclarada', () => {
+  it('siembra el rating inicial desde la categoría autodeclarada (legacy / seeds)', () => {
     expect(getInitialRatingForCategory('8va')).toBeLessThan(getInitialRatingForCategory('5ta'));
     expect(getInitialRatingForCategory('1ra')).toBeGreaterThan(getInitialRatingForCategory('2da'));
+  });
+
+  it('usa rating 500 como skill 0 para nuevos jugadores en nivelación', () => {
+    expect(ratingToSkillScore(500)).toBe(0);
   });
 
   it('devuelve 0 de delta cuando ambos equipos tienen el mismo rating y empatan expectativa/resultado', () => {

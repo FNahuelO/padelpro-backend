@@ -1,9 +1,17 @@
-import { BadRequestException, Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  forwardRef,
+} from '@nestjs/common';
 import { ClubPointsService } from '../clubs/club-points.service';
 import { CompetitiveScoringService } from '../competitive-scoring/competitive-scoring.service';
 import { BadgesService } from '../badges/badges.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
-import { defaultLevelBand } from '../common/utils/level-range.util';
+import { isClubRole } from '../common/roles';
+import { defaultLevelBand, getCategoryLevelRange } from '../common/utils/level-range.util';
 import { CreateMatchDto } from './dto/create-match.dto';
 import { MatchInviteDto } from './dto/match-invite.dto';
 import { CreateMatchResultDto } from './dto/create-match-result.dto';
@@ -13,7 +21,7 @@ import { PlayerRatingDto } from './dto/player-rating.dto';
 import { UpdateMatchStatusDto } from './dto/update-match-status.dto';
 import { MatchesRepository } from './matches.repository';
 import { PaymentsService } from '../payments/payments.service';
-import { resolvePlayerRating } from '../common/utils';
+import { resolvePlayerRating, PLACEMENT_ELO_K_FACTOR, PLACEMENT_MATCHES_REQUIRED, resolveMatchGenderFromPartner, type MatchGender } from '../common/utils';
 import { parseBestOfThreeSets } from '../common/utils/match-result.util';
 import { computeMatchRatingChanges, splitParticipantsByTeam } from '../rating/engine';
 
@@ -29,6 +37,27 @@ export class MatchesService {
     private readonly paymentsService: PaymentsService,
   ) {}
 
+  private static readonly LEAVABLE_STATUSES = ['OPEN', 'FULL', 'CONFIRMED'] as const;
+  private static readonly ACTIVE_PLAYER_STATUSES = ['JOINED', 'CONFIRMED', 'REQUESTED'] as const;
+
+  async resolveGenderForInvites(
+    userId: string,
+    invites: MatchInviteDto[] | undefined,
+    requested: MatchGender = 'open',
+    mode?: string,
+  ): Promise<MatchGender> {
+    if (mode !== 'competitive') return 'open';
+
+    const partnerInvite = invites?.find((invite) => invite.role === 'partner' && invite.userId);
+    if (!partnerInvite?.userId) return requested;
+
+    const [selfGender, partnerGender] = await Promise.all([
+      this.matchesRepository.getGenderByUserId(userId),
+      this.matchesRepository.getGenderByUserId(partnerInvite.userId),
+    ]);
+    return resolveMatchGenderFromPartner(selfGender, partnerGender, requested);
+  }
+
   async expirePastCourtWindowMatches(): Promise<number> {
     await this.matchesRepository.expirePastCourtSlots();
     return this.matchesRepository.expirePastCourtWindowMatches();
@@ -40,14 +69,36 @@ export class MatchesService {
 
   async create(userId: string, dto: CreateMatchDto) {
     if (dto.levelMin == null || dto.levelMax == null) {
-      const level = await this.matchesRepository.getPlayerSkillScoreByUserId(userId);
-      const band = defaultLevelBand(level ?? 400);
-      dto.levelMin = dto.levelMin ?? band.min;
-      dto.levelMax = dto.levelMax ?? band.max;
+      const placement = await this.matchesRepository.getPlayerPlacementBandByUserId(userId);
+      if (placement?.categoryStatus === 'provisional' && placement.declaredCategory) {
+        const band = getCategoryLevelRange(placement.declaredCategory);
+        dto.levelMin = dto.levelMin ?? band.min;
+        dto.levelMax = dto.levelMax ?? band.max;
+      } else {
+        const level = placement?.skillScore ?? (await this.matchesRepository.getPlayerSkillScoreByUserId(userId));
+        const band = defaultLevelBand(level ?? 400);
+        dto.levelMin = dto.levelMin ?? band.min;
+        dto.levelMax = dto.levelMax ?? band.max;
+      }
     }
+
+    if (dto.courtSlotId && !dto.clubId) {
+      throw new BadRequestException('El turno de cancha requiere un club');
+    }
+
+    dto.gender = await this.resolveGenderForInvites(
+      userId,
+      dto.invites,
+      dto.gender ?? 'open',
+      dto.mode,
+    );
 
     const result = await this.matchesRepository.create(userId, dto);
     const match = result.rows[0];
+
+    if (dto.courtSlotId && dto.clubId) {
+      await this.matchesRepository.bookCourtSlot(dto.courtSlotId, dto.clubId);
+    }
 
     const playerId = await this.matchesRepository.getPlayerIdByUserId(userId);
     if (playerId) {
@@ -352,18 +403,139 @@ export class MatchesService {
   }
 
   async leaveMatch(matchId: string, userId: string) {
+    const match = await this.matchesRepository.getById(matchId);
+    if (!match) {
+      throw new NotFoundException('Partido no encontrado');
+    }
+    if (!MatchesService.LEAVABLE_STATUSES.includes(match.status)) {
+      throw new BadRequestException('Ya no podés salir de este partido');
+    }
+
     const playerId = await this.matchesRepository.getPlayerIdByUserId(userId);
     if (!playerId) {
       throw new BadRequestException('Jugador no encontrado');
     }
+
+    const playerStatus = await this.matchesRepository.getPlayerMatchStatus(matchId, playerId);
+    if (
+      !playerStatus ||
+      !MatchesService.ACTIVE_PLAYER_STATUSES.includes(
+        playerStatus as (typeof MatchesService.ACTIVE_PLAYER_STATUSES)[number],
+      )
+    ) {
+      throw new BadRequestException('No participás de este partido');
+    }
+
+    const isOrganizer = match.created_by_user_id === userId;
+    if (isOrganizer && playerStatus !== 'REQUESTED') {
+      const nextOrganizer = await this.matchesRepository.getNextOrganizerCandidate(matchId, userId);
+      if (!nextOrganizer) {
+        return this.cancelMatch(matchId, userId);
+      }
+
+      const depositPolicy = await this.paymentsService.settleDepositOnLeave(
+        matchId,
+        playerId,
+        match.created_at,
+      );
+
+      await this.matchesRepository.leave(matchId, playerId);
+      await this.matchesRepository.updateCreatedBy(matchId, nextOrganizer.user_id);
+
+      if (match.status === 'FULL' || match.status === 'CONFIRMED') {
+        await this.matchesRepository.updateStatus(matchId, 'OPEN');
+      }
+
+      await this.matchesRepository.notifyUsers(
+        [nextOrganizer.user_id],
+        'MATCH_ORGANIZER_TRANSFERRED',
+        'Ahora organizás el partido',
+        `Quedaste a cargo de "${match.title}" porque el organizador anterior salió.`,
+        { matchId, previousOrganizerUserId: userId },
+      );
+
+      const updated = await this.findOne(matchId, userId);
+      this.realtimeGateway.emitMatchLeft({ matchId, userId });
+      this.realtimeGateway.emitMatchUpdated(updated);
+      return {
+        match: updated,
+        depositPolicy,
+        organizerTransferred: true,
+        newOrganizerUserId: nextOrganizer.user_id,
+        newOrganizerName: nextOrganizer.name,
+        cancelled: false,
+      };
+    }
+
+    const depositPolicy = await this.paymentsService.settleDepositOnLeave(
+      matchId,
+      playerId,
+      match.created_at,
+    );
+
     await this.matchesRepository.leave(matchId, playerId);
-    const updated = await this.findOne(matchId);
-    if (updated.status === 'FULL') {
+
+    if (match.status === 'FULL' || match.status === 'CONFIRMED') {
       await this.matchesRepository.updateStatus(matchId, 'OPEN');
     }
+
+    const updated = await this.findOne(matchId, userId);
     this.realtimeGateway.emitMatchLeft({ matchId, userId });
     this.realtimeGateway.emitMatchUpdated(updated);
-    return updated;
+    return {
+      match: updated,
+      depositPolicy,
+      organizerTransferred: false,
+      cancelled: false,
+    };
+  }
+
+  async cancelMatch(matchId: string, userId: string) {
+    const match = await this.matchesRepository.getById(matchId);
+    if (!match) {
+      throw new NotFoundException('Partido no encontrado');
+    }
+
+    if (!MatchesService.LEAVABLE_STATUSES.includes(match.status)) {
+      throw new BadRequestException('Este partido no se puede cancelar en su estado actual');
+    }
+
+    const role = await this.matchesRepository.getUserRole(userId);
+    const isCreator = match.created_by_user_id === userId;
+    const isClubAccount = isClubRole(role ?? undefined);
+    if (!isCreator && !isClubAccount) {
+      throw new ForbiddenException('Solo el creador o el club pueden cancelar el partido');
+    }
+
+    const depositPolicy = await this.paymentsService.settleMatchDepositsOnCancel(
+      matchId,
+      match.created_at,
+    );
+
+    await this.matchesRepository.updateStatus(matchId, 'CANCELLED');
+
+    if (match.court_slot_id) {
+      await this.matchesRepository.releaseCourtSlot(match.court_slot_id);
+    }
+
+    const participantIds = await this.matchesRepository.listActiveParticipantUserIds(matchId);
+    const notifyIds = participantIds.filter((id) => id !== userId);
+    const señaHint = depositPolicy.withinFreeWindow
+      ? 'Las señas pagadas se reembolsan.'
+      : depositPolicy.retained > 0
+        ? 'Pasaron más de 30 minutos: las señas pagadas se retienen.'
+        : '';
+    await this.matchesRepository.notifyUsers(
+      notifyIds,
+      'MATCH_CANCELLED',
+      'Partido cancelado',
+      `Se canceló "${match.title}". ${señaHint}`.trim(),
+      { matchId, depositPolicy },
+    );
+
+    const updated = await this.findOne(matchId, userId);
+    this.realtimeGateway.emitMatchUpdated(updated);
+    return { match: updated, depositPolicy, cancelled: true, organizerTransferred: false };
   }
 
   getDepositStatus(matchId: string, userId: string) {
@@ -418,6 +590,9 @@ export class MatchesService {
   }
 
   async updateMatchStatus(matchId: string, dto: UpdateMatchStatusDto) {
+    if (dto.status === 'CANCELLED') {
+      throw new BadRequestException('Usá POST /matches/:id/cancel para cancelar el partido');
+    }
     const result = await this.matchesRepository.updateStatus(matchId, dto.status);
     const match = await this.matchesRepository.getDetail(matchId);
     this.realtimeGateway.emitMatchUpdated(match ?? result.rows[0]);
@@ -561,10 +736,27 @@ export class MatchesService {
     await this.clubPointsService.awardForFinishedMatch(matchId, winnerTeam);
     await this.competitiveScoringService.awardForFinishedMatch(matchId);
     await this.applyMatchRatings(matchId, winnerTeam);
+    await this.advancePlacementIfCompetitive(matchId);
     await this.badgesService.evaluateForFinishedMatch(matchId);
     const detail = await this.findOne(matchId);
     this.realtimeGateway.emitMatchUpdated(detail);
     return true;
+  }
+
+  private async advancePlacementIfCompetitive(matchId: string) {
+    const match = await this.matchesRepository.getById(matchId);
+    if (!match || match.mode !== 'competitive' || match.tournament_id) return;
+
+    const participants = await this.matchesRepository.getParticipantsForRating(matchId);
+    const provisionalUserIds = participants
+      .filter((player) => player.categoryStatus === 'provisional')
+      .map((player) => player.userId);
+    if (provisionalUserIds.length === 0) return;
+
+    await this.matchesRepository.advancePlacementForCompetitiveMatch(
+      provisionalUserIds,
+      PLACEMENT_MATCHES_REQUIRED,
+    );
   }
 
   private async applyMatchRatings(matchId: string, winnerTeam: string | null | undefined) {
@@ -606,6 +798,7 @@ export class MatchesService {
         userId: player.userId,
         rating: resolvePlayerRating(player),
         rank: player.rank,
+        kFactor: player.categoryStatus === 'provisional' ? PLACEMENT_ELO_K_FACTOR : undefined,
       })),
       neededPlayers,
       winnerTeam: winner,

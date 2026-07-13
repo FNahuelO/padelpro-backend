@@ -136,6 +136,30 @@ export class PaymentsRepository {
     return (res.rows[0] as DepositRow) ?? null;
   }
 
+  async markRefunded(depositId: string) {
+    const res = await this.db.query(
+      `UPDATE match_deposits
+       SET status = 'REFUNDED',
+           updated_at = NOW()
+       WHERE id = $1 AND status = 'APPROVED'
+       RETURNING *`,
+      [depositId],
+    );
+    return (res.rows[0] as DepositRow) ?? null;
+  }
+
+  async markCancelled(depositId: string) {
+    const res = await this.db.query(
+      `UPDATE match_deposits
+       SET status = 'CANCELLED',
+           updated_at = NOW()
+       WHERE id = $1 AND status = 'PENDING'
+       RETURNING *`,
+      [depositId],
+    );
+    return (res.rows[0] as DepositRow) ?? null;
+  }
+
   async updateCheckoutUrl(depositId: string, checkoutUrl: string, preferenceId?: string) {
     await this.db.query(
       `UPDATE match_deposits

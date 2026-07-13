@@ -192,13 +192,18 @@ async function main() {
       );
 
       await pool.query(
-        `INSERT INTO players (user_id, nickname, city, zone, level, position)
-         VALUES ($1, $2, $3, $4, $5, 'ambos')
+        `INSERT INTO players (
+           user_id, nickname, city, zone, level, position,
+           category_status, placement_matches_played
+         )
+         VALUES ($1, $2, $3, $4, $5, 'ambos', 'confirmed', 5)
          ON CONFLICT (user_id) DO UPDATE SET
            nickname = EXCLUDED.nickname,
            city = EXCLUDED.city,
            zone = EXCLUDED.zone,
            level = EXCLUDED.level,
+           category_status = 'confirmed',
+           placement_matches_played = GREATEST(players.placement_matches_played, 5),
            updated_at = NOW()`,
         [user.id, user.nickname, user.city, user.zone, user.level],
       );

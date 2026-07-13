@@ -1,4 +1,4 @@
-import { computeEloDelta } from '../common/utils/player-rating.util';
+import { computeEloDelta, ELO_K_FACTOR } from '../common/utils/player-rating.util';
 import { COMPETITIVE_MIN_WIN_POINTS } from '../common/utils/category-scoring.util';
 import { userTeamFromRank } from '../common/utils/match-result.util';
 
@@ -19,6 +19,8 @@ export type RatingParticipant = {
   userId: string;
   rating: number;
   rank: number;
+  /** K factor propio (p.ej. más alto en nivelación). */
+  kFactor?: number;
 };
 
 export type SetScore = { teamA: number; teamB: number };
@@ -119,16 +121,16 @@ export function computeMatchRatingChanges(input: {
 
   const novelty = noveltyFactor(input.priorEncounters);
   const margin = marginFactor(input.sets ?? []);
-  const rawDeltaA = computeEloDelta(teamARating, teamBRating, actualScoreA);
-  const deltaA = applyPointsMultiplier(rawDeltaA, novelty, margin);
-  const deltaB = -deltaA;
 
   return input.participants.map((player) => {
+    const team = userTeamFromRank(player.rank, input.neededPlayers);
+    const myTeamRating = team === 'A' ? teamARating : teamBRating;
+    const oppTeamRating = team === 'A' ? teamBRating : teamARating;
+    const actualScore = team === 'A' ? actualScoreA : 1 - actualScoreA;
+    const kFactor = player.kFactor ?? ELO_K_FACTOR;
+    const rawDelta = computeEloDelta(myTeamRating, oppTeamRating, actualScore, kFactor);
+    const delta = applyPointsMultiplier(rawDelta, novelty, margin);
     const ratingBefore = player.rating;
-    const rawDelta =
-      userTeamFromRank(player.rank, input.neededPlayers) === 'A' ? rawDeltaA : -rawDeltaA;
-    const delta =
-      userTeamFromRank(player.rank, input.neededPlayers) === 'A' ? deltaA : deltaB;
     return {
       userId: player.userId,
       ratingBefore,

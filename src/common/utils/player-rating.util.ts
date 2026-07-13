@@ -4,6 +4,15 @@ export const DEFAULT_SKILL_SCORE = 400;
 export const MIN_VISIBLE_SKILL_SCORE = 0;
 export const MAX_VISIBLE_SKILL_SCORE = 1000;
 
+/** Rating inicial al registrarse (skill visible = 0). */
+export const PLACEMENT_INITIAL_RATING = 500;
+/** Partidos competitivos confirmados para salir de nivelación. */
+export const PLACEMENT_MATCHES_REQUIRED = 5;
+/** K más alto durante nivelación para calibrar más rápido. */
+export const PLACEMENT_ELO_K_FACTOR = 40;
+
+export type CategoryStatus = 'provisional' | 'confirmed';
+
 export const PLAYER_CATEGORIES = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'] as const;
 export type PlayerCategory = (typeof PLAYER_CATEGORIES)[number];
 

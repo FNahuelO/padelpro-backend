@@ -79,6 +79,25 @@ describe('computeMatchRatingChanges', () => {
       expect(change.delta).toBeCloseTo(0, 5);
     }
   });
+
+  it('usa K más alto en nivelación para mover más el rating', () => {
+    const normal = computeMatchRatingChanges({
+      participants,
+      neededPlayers: 4,
+      winnerTeam: 'A',
+      priorEncounters: 0,
+    });
+    const placement = computeMatchRatingChanges({
+      participants: participants.map((player) => ({ ...player, kFactor: 40 })),
+      neededPlayers: 4,
+      winnerTeam: 'A',
+      priorEncounters: 0,
+    });
+
+    const normalWinner = normal.find((change) => change.userId === 'a1');
+    const placementWinner = placement.find((change) => change.userId === 'a1');
+    expect(Math.abs(placementWinner?.delta ?? 0)).toBeGreaterThan(Math.abs(normalWinner?.delta ?? 0));
+  });
 });
 
 describe('applyNoveltyToCompetitivePoints', () => {

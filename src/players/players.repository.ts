@@ -77,10 +77,14 @@ export class PlayersRepository {
               p.rating,
               p.photo_url,
               p.zone,
-              p.city
+              p.city,
+              p.extras,
+              p.category_status,
+              p.placement_matches_played
        FROM players p
        INNER JOIN users u ON u.id = p.user_id
        WHERE p.user_id <> $1
+         AND u.role = 'PLAYER'
          AND (
            u.name ILIKE $2
            OR COALESCE(p.nickname, '') ILIKE $2

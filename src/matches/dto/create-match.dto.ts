@@ -18,6 +18,10 @@ export class CreateMatchDto {
   @IsString()
   clubId?: string;
 
+  @IsOptional()
+  @IsString()
+  courtSlotId?: string;
+
   @IsString()
   title: string;
 
@@ -35,13 +39,13 @@ export class CreateMatchDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(100)
+  @Max(1000)
   levelMin?: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(100)
+  @Max(1000)
   levelMax?: number;
 
   @IsIn(['male', 'female', 'mixed', 'open'])
@@ -54,6 +58,10 @@ export class CreateMatchDto {
   @Min(2)
   @Max(8)
   neededPlayers: number;
+
+  @IsOptional()
+  @IsDateString()
+  endsAt?: string;
 
   @IsOptional()
   @IsArray()

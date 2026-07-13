@@ -1,7 +1,6 @@
-import { ArrayMaxSize, IsArray, IsOptional, IsUUID } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsIn, IsOptional, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { MatchInviteDto } from '../../matches/dto/match-invite.dto';
-import { ValidateNested } from 'class-validator';
 
 export class RunMatchmakingDto {
   @IsOptional()
@@ -10,4 +9,12 @@ export class RunMatchmakingDto {
   @ValidateNested({ each: true })
   @Type(() => MatchInviteDto)
   invites?: MatchInviteDto[];
+
+  @IsOptional()
+  @IsIn(['friendly', 'competitive'])
+  mode?: 'friendly' | 'competitive';
+
+  @IsOptional()
+  @IsIn(['male', 'female', 'mixed', 'open'])
+  gender?: 'male' | 'female' | 'mixed' | 'open';
 }

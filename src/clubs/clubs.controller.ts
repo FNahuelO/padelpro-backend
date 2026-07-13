@@ -28,6 +28,20 @@ export class ClubsController {
     return this.clubsService.findAll();
   }
 
+  @Get('available')
+  @UseGuards(JwtAuthGuard)
+  findAvailable(
+    @Query('date') date?: string,
+    @Query('startHour') startHour?: string,
+    @Query('endHour') endHour?: string,
+  ) {
+    return this.clubsService.findAvailableForWindow(
+      date ?? '',
+      startHour != null ? Number(startHour) : NaN,
+      endHour != null ? Number(endHour) : NaN,
+    );
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.clubsService.findOne(id);

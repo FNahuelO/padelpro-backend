@@ -66,7 +66,13 @@ export class MatchmakingService {
   /**
    * Busca jugadores por disponibilidad y nivel, arma partido de 4 y confirma al creador.
    */
-  async runMatchmaking(matchRequestId: string, userId: string, invites?: MatchInviteDto[]) {
+  async runMatchmaking(
+    matchRequestId: string,
+    userId: string,
+    invites?: MatchInviteDto[],
+    mode: 'friendly' | 'competitive' = 'friendly',
+    gender: 'male' | 'female' | 'mixed' | 'open' = 'open',
+  ) {
     const requestResult = await this.db.query(
       `SELECT mr.*, u.name AS creator_name, p.rating AS creator_rating
        FROM match_requests mr
@@ -95,6 +101,13 @@ export class MatchmakingService {
     if (slotsToFill < 0) {
       throw new BadRequestException('Solo podés invitar hasta 3 jugadores (1 compañero y 2 rivales)');
     }
+
+    const resolvedGender = await this.matchesService.resolveGenderForInvites(
+      userId,
+      invites,
+      gender,
+      mode,
+    );
 
     const matchDate = new Date(matchRequest.match_date);
     let autoSelected: { player_id: string; user_id: string; skill_score: number }[] = [];
@@ -127,22 +140,34 @@ export class MatchmakingService {
     }
 
     const startAt = new Date(matchDate);
-    startAt.setHours(matchRequest.start_hour, 0, 0, 0);
+    startAt.setHours(Number(matchRequest.start_hour), 0, 0, 0);
+
+    const endHour = Number(matchRequest.end_hour);
+    const endsAt = new Date(matchDate);
+    if (endHour >= 24) {
+      endsAt.setDate(endsAt.getDate() + 1);
+      endsAt.setHours(0, 0, 0, 0);
+    } else {
+      endsAt.setHours(endHour, 0, 0, 0);
+    }
 
     const matchInsert = await this.db.query(
       `INSERT INTO matches (
-         club_id, created_by_user_id, title, description, date, zone,
+         club_id, created_by_user_id, title, description, date, ends_at, zone,
          level_min, level_max, gender, mode, needed_players, status
-       ) VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, 'open', 'friendly', 4, 'FULL')
+       ) VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, 4, 'FULL')
        RETURNING *`,
       [
-        matchRequest.club_id,
+        matchRequest.club_id ?? null,
         userId,
-        'Partido matchmaking',
+        mode === 'competitive' ? 'Partido competitivo' : 'Partido matchmaking',
         'Armado automáticamente según disponibilidad y nivel',
         startAt.toISOString(),
+        endsAt.toISOString(),
         matchRequest.level_min,
         matchRequest.level_max,
+        resolvedGender,
+        mode,
       ],
     );
     const match = matchInsert.rows[0];

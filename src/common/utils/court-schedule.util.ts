@@ -6,6 +6,7 @@ export const MATCH_COURT_END_AT_SQL = `
       FROM court_availability_slots cas
       WHERE cas.id = m.court_slot_id
     )
+    WHEN m.ends_at IS NOT NULL THEN m.ends_at
     ELSE m.date + (
       COALESCE(
         (SELECT c.court_duration_hours FROM clubs c WHERE c.id = m.club_id),

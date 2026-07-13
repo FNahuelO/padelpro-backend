@@ -228,11 +228,13 @@ export class TournamentsService {
   async listRegistrations(tournamentId: string) {
     const result = await this.db.query(
       `SELECT r.*,
-              u1.name AS player1_account_name, u1.photo_url AS player1_photo,
-              u2.name AS player2_account_name, u2.photo_url AS player2_photo
+              u1.name AS player1_account_name, p1.photo_url AS player1_photo,
+              u2.name AS player2_account_name, p2.photo_url AS player2_photo
        FROM tournament_registrations r
        LEFT JOIN users u1 ON u1.id = r.player1_user_id
+       LEFT JOIN players p1 ON p1.user_id = r.player1_user_id
        LEFT JOIN users u2 ON u2.id = r.player2_user_id
+       LEFT JOIN players p2 ON p2.user_id = r.player2_user_id
        WHERE r.tournament_id = $1
        ORDER BY
          CASE r.status WHEN 'APPROVED' THEN 0 WHEN 'PENDING' THEN 1 ELSE 2 END,
