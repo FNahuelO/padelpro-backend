@@ -40,8 +40,9 @@ export class MatchesRepository {
     return this.db.query(
       `INSERT INTO matches (
         club_id, created_by_user_id, title, description, date, ends_at, zone,
-        level_min, level_max, gender, mode, needed_players, court_slot_id, status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'OPEN')
+        level_min, level_max, gender, mode, needed_players, court_slot_id,
+        court_booking, venue_note, status
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'OPEN')
       RETURNING *`,
       [
         dto.clubId ?? null,
@@ -57,6 +58,8 @@ export class MatchesRepository {
         dto.mode,
         dto.neededPlayers,
         dto.courtSlotId ?? null,
+        dto.courtBooking ?? 'none',
+        dto.venueNote ?? null,
       ],
     );
   }
@@ -301,6 +304,116 @@ export class MatchesRepository {
     return result.rows;
   }
 
+  async listOpenForSearch(params: {
+    categoryMin: number;
+    categoryMax: number;
+    lat?: number | null;
+    lng?: number | null;
+    radiusKm?: number | null;
+    zone?: string | null;
+    limit?: number;
+  }) {
+    const hasCoords = params.lat != null && params.lng != null;
+    const radiusKm = params.radiusKm ?? 30;
+    const zoneFilter = params.zone?.trim() ? `%${params.zone.trim()}%` : null;
+    const limit = params.limit ?? 50;
+
+    const distanceExpr = hasCoords
+      ? `CASE
+           WHEN match_lat IS NOT NULL AND match_lng IS NOT NULL THEN
+             ROUND(
+               (
+                 6371 * acos(
+                   LEAST(
+                     1,
+                     GREATEST(
+                       -1,
+                       cos(radians($3::float8)) * cos(radians(match_lat))
+                       * cos(radians(match_lng) - radians($4::float8))
+                       + sin(radians($3::float8)) * sin(radians(match_lat))
+                     )
+                   )
+                 )
+               )::numeric,
+               1
+             )
+           ELSE NULL
+         END`
+      : 'NULL::numeric';
+
+    const result = await this.db.query(
+      `WITH match_points AS (
+         SELECT m.*,
+                c.id AS club_id_joined,
+                c.name AS club_name,
+                c.zone AS club_zone,
+                c.city AS club_city,
+                COALESCE(c.latitude::float8, creator.latitude::float8) AS match_lat,
+                COALESCE(c.longitude::float8, creator.longitude::float8) AS match_lng,
+                (
+                  (SELECT COUNT(*)::int FROM match_players mp WHERE mp.match_id = m.id AND mp.status IN ('JOINED','CONFIRMED'))
+                  +
+                  (SELECT COUNT(*)::int FROM match_guests mg WHERE mg.match_id = m.id)
+                ) AS joined_count
+         FROM matches m
+         LEFT JOIN clubs c ON c.id = m.club_id
+         LEFT JOIN players creator ON creator.user_id = m.created_by_user_id
+         WHERE m.status = 'OPEN'
+           AND m.date > NOW()
+           AND COALESCE(m.level_min, 0) <= $2
+           AND COALESCE(m.level_max, 1000) >= $1
+       )
+       SELECT mp.*,
+              ${distanceExpr} AS distance_km
+       FROM match_points mp
+       WHERE (
+               SELECT COUNT(*)::int FROM match_players x WHERE x.match_id = mp.id AND x.status IN ('JOINED','CONFIRMED')
+             ) + (
+               SELECT COUNT(*)::int FROM match_guests g WHERE g.match_id = mp.id
+             ) < mp.needed_players
+         AND (
+           $5::text IS NULL
+           OR mp.zone ILIKE $5
+           OR mp.venue_note ILIKE $5
+           OR mp.club_zone ILIKE $5
+           OR mp.club_city ILIKE $5
+         )
+         AND (
+           $6::boolean = false
+           OR (
+             mp.match_lat IS NOT NULL
+             AND mp.match_lng IS NOT NULL
+             AND (
+               6371 * acos(
+                 LEAST(
+                   1,
+                   GREATEST(
+                     -1,
+                     cos(radians($3::float8)) * cos(radians(mp.match_lat))
+                     * cos(radians(mp.match_lng) - radians($4::float8))
+                     + sin(radians($3::float8)) * sin(radians(mp.match_lat))
+                   )
+                 )
+               )
+             ) <= $7
+           )
+         )
+       ORDER BY distance_km ASC NULLS LAST, mp.date ASC
+       LIMIT $8`,
+      [
+        params.categoryMin,
+        params.categoryMax,
+        hasCoords ? params.lat : null,
+        hasCoords ? params.lng : null,
+        zoneFilter,
+        hasCoords,
+        radiusKm,
+        limit,
+      ],
+    );
+    return result.rows;
+  }
+
   async listByUser(userId: string) {
     const result = await this.db.query(
       `SELECT m.*,
@@ -350,12 +463,40 @@ export class MatchesRepository {
     if (!row) return null;
     const extras =
       row.extras && typeof row.extras === 'object' && !Array.isArray(row.extras) ? row.extras : {};
+    const rating = resolvePlayerRating(row);
     return {
-      skillScore: ratingToSkillScore(resolvePlayerRating(row)),
+      rating,
+      skillScore: ratingToSkillScore(rating),
       categoryStatus: (row.category_status as string) ?? 'confirmed',
       declaredCategory:
         typeof extras.declaredCategory === 'string' ? extras.declaredCategory : null,
     };
+  }
+
+  async getPlayerCoordinatesByUserId(userId: string): Promise<{ lat: number | null; lng: number | null }> {
+    const result = await this.db.query(
+      `SELECT latitude, longitude FROM players WHERE user_id = $1`,
+      [userId],
+    );
+    const row = result.rows[0];
+    const lat = row?.latitude != null ? Number(row.latitude) : null;
+    const lng = row?.longitude != null ? Number(row.longitude) : null;
+    return {
+      lat: lat != null && Number.isFinite(lat) ? lat : null,
+      lng: lng != null && Number.isFinite(lng) ? lng : null,
+    };
+  }
+
+  async savePlayerCoordinates(userId: string, lat: number, lng: number) {
+    await this.db.query(
+      `UPDATE players
+       SET latitude = $2,
+           longitude = $3,
+           location_updated_at = NOW(),
+           updated_at = NOW()
+       WHERE user_id = $1`,
+      [userId, lat, lng],
+    );
   }
 
   async join(

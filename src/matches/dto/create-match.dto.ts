@@ -13,6 +13,8 @@ import {
 } from 'class-validator';
 import { MatchInviteDto } from './match-invite.dto';
 
+export type CourtBookingMode = 'none' | 'external' | 'in_app';
+
 export class CreateMatchDto {
   @IsOptional()
   @IsString()
@@ -21,6 +23,14 @@ export class CreateMatchDto {
   @IsOptional()
   @IsString()
   courtSlotId?: string;
+
+  @IsOptional()
+  @IsIn(['none', 'external', 'in_app'])
+  courtBooking?: CourtBookingMode;
+
+  @IsOptional()
+  @IsString()
+  venueNote?: string;
 
   @IsString()
   title: string;

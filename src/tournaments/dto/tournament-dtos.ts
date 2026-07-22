@@ -238,7 +238,7 @@ export class UpdateMatchDto {
 export class GenerateFixtureDto {
   @IsOptional()
   @IsString()
-  mode?: 'ROUND_ROBIN' | 'SINGLE_ELIMINATION';
+  mode?: 'ROUND_ROBIN' | 'SINGLE_ELIMINATION' | 'OPEN_COURT';
 
   @IsOptional()
   @IsBoolean()

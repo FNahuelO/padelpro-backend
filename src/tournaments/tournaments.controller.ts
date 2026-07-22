@@ -13,6 +13,7 @@ import {
 import { Response } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../common/guards/optional-jwt-auth.guard';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { CreateTournamentPhotoDto } from './dto/create-tournament-photo.dto';
 import {
@@ -39,6 +40,15 @@ export class TournamentsController {
   @Get()
   list() {
     return this.tournamentsService.list();
+  }
+
+  @Get('mine')
+  @UseGuards(JwtAuthGuard)
+  listMine(
+    @CurrentUser() user: { sub: string },
+    @Query('status') status?: string,
+  ) {
+    return this.tournamentsService.listMine(user.sub, status);
   }
 
   @Get('pay/mock')
@@ -132,8 +142,9 @@ export class TournamentsController {
   // --- Inscripciones ---
 
   @Get(':id/registrations')
-  registrations(@Param('id') id: string) {
-    return this.tournamentsService.listRegistrations(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  registrations(@Param('id') id: string, @CurrentUser() user?: { sub: string }) {
+    return this.tournamentsService.listRegistrations(id, user?.sub);
   }
 
   @Get(':id/registrations/me')
@@ -206,6 +217,18 @@ export class TournamentsController {
     @CurrentUser() user: { sub: string },
   ) {
     return this.tournamentsService.simulatePayment(id, regId, user.sub);
+  }
+
+  @Post(':id/registrations/:regId/mark-paid')
+  @UseGuards(JwtAuthGuard)
+  async markPaid(
+    @Param('id') id: string,
+    @Param('regId') regId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    const reg = await this.tournamentsService.markRegistrationPaid(id, regId, user.sub);
+    this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'registration_paid' });
+    return reg;
   }
 
   // --- Partidos / Fixture ---

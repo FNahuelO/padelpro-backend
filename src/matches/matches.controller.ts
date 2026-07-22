@@ -5,12 +5,14 @@ import {
   Param,
   Post,
   Body,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { MatchesService } from './matches.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateMatchDto } from './dto/create-match.dto';
+import { ListOpenMatchesQueryDto } from './dto/list-open-matches.query.dto';
 import { CreateMatchResultDto } from './dto/create-match-result.dto';
 import { ConfirmMatchResultDto } from './dto/confirm-match-result.dto';
 import { RejectMatchResultDto } from './dto/reject-match-result.dto';
@@ -34,6 +36,11 @@ export class MatchesController {
   @Get('me')
   async getMyMatches(@CurrentUser() user: any) {
     return this.matchesService.getMyMatches(user.sub);
+  }
+
+  @Get('open')
+  listOpenMatches(@CurrentUser() user: any, @Query() query: ListOpenMatchesQueryDto) {
+    return this.matchesService.listOpenMatches(user.sub, query);
   }
 
   @Get(':id/deposit')
@@ -135,4 +142,3 @@ export class MatchesController {
     return this.matchesService.confirmResult(id, user.sub, dto);
   }
 }
-

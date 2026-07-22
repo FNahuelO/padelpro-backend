@@ -5,6 +5,28 @@ import { DatabaseService } from '../database/database.service';
 export class NotificationsService {
   constructor(private readonly db: DatabaseService) {}
 
+  async create(params: {
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    data?: Record<string, unknown>;
+  }) {
+    const result = await this.db.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
+       RETURNING id`,
+      [
+        params.userId,
+        params.type,
+        params.title,
+        params.body,
+        JSON.stringify(params.data ?? {}),
+      ],
+    );
+    return result.rows[0];
+  }
+
   async listForUser(userId: string) {
     const result = await this.db.query(
       `SELECT id, type, title, body, data, read, created_at

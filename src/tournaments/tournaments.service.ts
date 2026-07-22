@@ -18,7 +18,7 @@ import {
 } from './dto/tournament-dtos';
 import { v2 as cloudinary } from 'cloudinary';
 
-const MANAGER_ROLES = ['CLUB_ADMIN', 'ORGANIZER', 'SUPER_ADMIN'];
+const EVENT_CREATOR_ROLES = ['PLAYER', 'ORGANIZER', 'CLUB_ADMIN', 'SUPER_ADMIN'];
 
 @Injectable()
 export class TournamentsService {
@@ -35,7 +35,7 @@ export class TournamentsService {
   // ---------------------------------------------------------------------------
 
   async create(userId: string, dto: CreateTournamentDto) {
-    await this.assertManagerRole(userId);
+    await this.assertCanCreateEvents(userId);
     const price = dto.price ?? null;
     const result = await this.db.query(
       `INSERT INTO tournaments
@@ -78,6 +78,50 @@ export class TournamentsService {
          t.start_date NULLS LAST,
          t.created_at DESC
        LIMIT 100`,
+    );
+    return result.rows;
+  }
+
+  /** Torneos del organizador autenticado (microcosmos / historial). */
+  async listMine(userId: string, status?: string) {
+    // Cualquier usuario autenticado puede listar los torneos que creó.
+
+    const params: unknown[] = [userId];
+    let statusFilter = '';
+    if (status && status !== 'ALL') {
+      params.push(status);
+      statusFilter = ` AND t.status = $${params.length}::tournament_status`;
+    }
+
+    const result = await this.db.query(
+      `SELECT t.*,
+              c.name AS club_name,
+              (SELECT COUNT(*)::int FROM tournament_registrations r
+                 WHERE r.tournament_id = t.id AND r.status = 'APPROVED') AS approved_count,
+              (SELECT COUNT(*)::int FROM tournament_registrations r
+                 WHERE r.tournament_id = t.id AND r.status = 'PENDING') AS pending_count,
+              (SELECT COUNT(*)::int FROM tournament_registrations r
+                 WHERE r.tournament_id = t.id) AS total_count,
+              (SELECT COUNT(*)::int FROM tournament_matches m
+                 WHERE m.tournament_id = t.id) AS matches_count,
+              (SELECT COUNT(*)::int FROM tournament_matches m
+                 WHERE m.tournament_id = t.id AND m.status = 'FINISHED') AS matches_finished_count
+       FROM tournaments t
+       LEFT JOIN clubs c ON c.id = t.club_id
+       WHERE t.organizer_user_id = $1
+       ${statusFilter}
+       ORDER BY
+         CASE t.status
+           WHEN 'IN_PROGRESS' THEN 0
+           WHEN 'OPEN_REGISTRATION' THEN 1
+           WHEN 'DRAFT' THEN 2
+           WHEN 'FINISHED' THEN 3
+           ELSE 4
+         END,
+         t.start_date DESC NULLS LAST,
+         t.created_at DESC
+       LIMIT 200`,
+      params,
     );
     return result.rows;
   }
@@ -134,8 +178,7 @@ export class TournamentsService {
   }
 
   async update(id: string, userId: string, dto: UpdateTournamentDto) {
-    await this.getById(id);
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(id, userId);
 
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -181,8 +224,7 @@ export class TournamentsService {
   }
 
   async remove(id: string, userId: string) {
-    await this.getById(id);
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(id, userId);
     await this.db.query(`DELETE FROM tournaments WHERE id = $1`, [id]);
     return { success: true };
   }
@@ -201,8 +243,7 @@ export class TournamentsService {
   }
 
   async addDate(tournamentId: string, userId: string, dto: CreateTournamentDateDto) {
-    await this.getById(tournamentId);
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     const result = await this.db.query(
       `INSERT INTO tournament_dates (tournament_id, play_date, label, notes)
        VALUES ($1, $2, $3, $4) RETURNING *`,
@@ -212,7 +253,7 @@ export class TournamentsService {
   }
 
   async removeDate(tournamentId: string, dateId: string, userId: string) {
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     const result = await this.db.query(
       `DELETE FROM tournament_dates WHERE id = $1 AND tournament_id = $2 RETURNING id`,
       [dateId, tournamentId],
@@ -225,7 +266,7 @@ export class TournamentsService {
   // Inscripciones
   // ---------------------------------------------------------------------------
 
-  async listRegistrations(tournamentId: string) {
+  async listRegistrations(tournamentId: string, viewerUserId?: string) {
     const result = await this.db.query(
       `SELECT r.*,
               u1.name AS player1_account_name, p1.photo_url AS player1_photo,
@@ -241,7 +282,39 @@ export class TournamentsService {
          r.created_at ASC`,
       [tournamentId],
     );
-    return result.rows;
+
+    const tournament = await this.db.query(
+      `SELECT organizer_user_id FROM tournaments WHERE id = $1`,
+      [tournamentId],
+    );
+    const canSeePayments =
+      !!viewerUserId && tournament.rows[0]?.organizer_user_id === viewerUserId;
+
+    if (canSeePayments) {
+      return result.rows;
+    }
+
+    // Solo el organizador ve estado/monto de pago de las inscripciones.
+    return result.rows.map((row) => {
+      const {
+        payment_status: _paymentStatus,
+        payment_amount: _paymentAmount,
+        payment_paid_at: _paymentPaidAt,
+        payment_provider: _paymentProvider,
+        payment_checkout_url: _paymentCheckoutUrl,
+        payment_external_reference: _paymentExternalRef,
+        payment_currency: _paymentCurrency,
+        ...publicRow
+      } = row;
+      return {
+        ...publicRow,
+        payment_required: row.payment_required,
+        payment_status: null,
+        payment_amount: null,
+        payment_paid_at: null,
+        payment_checkout_url: null,
+      };
+    });
   }
 
   async getMyRegistration(tournamentId: string, userId: string) {
@@ -257,15 +330,11 @@ export class TournamentsService {
 
   async register(tournamentId: string, userId: string | null, dto: CreateRegistrationDto) {
     const tournament = await this.getById(tournamentId);
-    // El organizador puede inscribir parejas en nombre de los jugadores aunque
+    // El dueño del torneo puede inscribir parejas en nombre de los jugadores aunque
     // las inscripciones no estén abiertas; al jugador final sí se le exigen los límites.
-    const managerRegistration = dto.onBehalf && userId ? await this.isManager(userId) : false;
+    const managerRegistration =
+      dto.onBehalf && userId ? await this.canManageTournament(tournamentId, userId) : false;
     if (!managerRegistration) {
-      if (userId && (await this.isManager(userId))) {
-        throw new ForbiddenException(
-          'Los organizadores no pueden inscribirse para jugar. Usá la gestión del torneo para inscribir parejas.',
-        );
-      }
       if (tournament.status !== 'OPEN_REGISTRATION') {
         throw new BadRequestException('Las inscripciones no están abiertas');
       }
@@ -276,6 +345,12 @@ export class TournamentsService {
 
     const price = tournament.price != null ? Number(tournament.price) : 0;
     const paymentRequired = price > 0;
+    const tournamentCategory = tournament.category ? String(tournament.category) : null;
+    const isSumCategory = tournamentCategory != null && /^Suma\s+\d+$/i.test(tournamentCategory.trim());
+    // En categoría fija la pareja hereda la del torneo; en suma se guarda el detalle enviado.
+    const registrationCategory = isSumCategory
+      ? dto.category ?? tournamentCategory
+      : tournamentCategory;
 
     const result = await this.db.query(
       `INSERT INTO tournament_registrations
@@ -294,7 +369,7 @@ export class TournamentsService {
         dto.player1Email ?? null,
         dto.player2Email ?? null,
         dto.phone ?? null,
-        dto.category ?? tournament.category ?? null,
+        registrationCategory,
         paymentRequired,
         paymentRequired ? 'PENDING' : null,
         paymentRequired ? price : null,
@@ -304,7 +379,7 @@ export class TournamentsService {
   }
 
   async approveRegistration(tournamentId: string, regId: string, userId: string) {
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     const result = await this.db.query(
       `UPDATE tournament_registrations
        SET status = 'APPROVED', approved_at = NOW(), rejected_at = NULL
@@ -316,7 +391,7 @@ export class TournamentsService {
   }
 
   async rejectRegistration(tournamentId: string, regId: string, userId: string) {
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     const result = await this.db.query(
       `UPDATE tournament_registrations
        SET status = 'REJECTED', rejected_at = NOW()
@@ -329,12 +404,12 @@ export class TournamentsService {
 
   async removeRegistration(tournamentId: string, regId: string, userId: string) {
     const reg = await this.getRegistrationOrThrow(tournamentId, regId);
-    const role = await this.getRole(userId);
     const isOwner =
       reg.created_by_user_id === userId ||
       reg.player1_user_id === userId ||
       reg.player2_user_id === userId;
-    if (!isOwner && !MANAGER_ROLES.includes(role)) {
+    const canManage = await this.canManageTournament(tournamentId, userId);
+    if (!isOwner && !canManage) {
       throw new ForbiddenException('No podés eliminar esta inscripción');
     }
     await this.db.query(`DELETE FROM tournament_registrations WHERE id = $1`, [regId]);
@@ -442,6 +517,37 @@ export class TournamentsService {
     return { ok: true };
   }
 
+  /** Organizador marca el pago como acreditado (efectivo, transferencia, prueba, etc.). */
+  async markRegistrationPaid(tournamentId: string, regId: string, userId: string) {
+    const tournament = await this.db.query(
+      `SELECT organizer_user_id FROM tournaments WHERE id = $1`,
+      [tournamentId],
+    );
+    if (!tournament.rows[0]) throw new NotFoundException('Torneo no encontrado');
+    const role = await this.getRole(userId);
+    if (tournament.rows[0].organizer_user_id !== userId && role !== 'SUPER_ADMIN') {
+      throw new ForbiddenException('Solo el organizador de este torneo puede marcar pagos');
+    }
+    const reg = await this.getRegistrationOrThrow(tournamentId, regId);
+    if (!reg.payment_required) {
+      throw new BadRequestException('Esta inscripción no requiere pago');
+    }
+    if (reg.payment_status === 'APPROVED') {
+      return reg;
+    }
+    const result = await this.db.query(
+      `UPDATE tournament_registrations
+       SET payment_status = 'APPROVED',
+           payment_paid_at = NOW(),
+           payment_provider = COALESCE(payment_provider, 'MANUAL')
+       WHERE id = $1 AND tournament_id = $2
+       RETURNING *`,
+      [regId, tournamentId],
+    );
+    if (!result.rows[0]) throw new NotFoundException('Inscripción no encontrada');
+    return result.rows[0];
+  }
+
   async approvePaymentByRef(externalReference: string) {
     const regId = externalReference.replace('treg:', '');
     const result = await this.db.query(
@@ -516,7 +622,7 @@ export class TournamentsService {
 
   async createMatch(tournamentId: string, userId: string, dto: CreateTournamentMatchDto) {
     await this.getById(tournamentId);
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
 
     const teamAName = dto.teamAName ?? (await this.registrationName(dto.teamARegistrationId));
     const teamBName = dto.teamBName ?? (await this.registrationName(dto.teamBRegistrationId));
@@ -544,7 +650,7 @@ export class TournamentsService {
   }
 
   async updateMatch(tournamentId: string, matchId: string, userId: string, dto: UpdateMatchDto) {
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     const match = await this.getMatchOrThrow(tournamentId, matchId);
 
     const fields: string[] = [];
@@ -578,7 +684,7 @@ export class TournamentsService {
   }
 
   async setMatchScore(tournamentId: string, matchId: string, userId: string, dto: SetScoreDto) {
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     const match = await this.getMatchOrThrow(tournamentId, matchId);
     if (!dto.sets?.length) throw new BadRequestException('Sets requeridos');
 
@@ -602,15 +708,15 @@ export class TournamentsService {
   }
 
   async removeMatch(tournamentId: string, matchId: string, userId: string) {
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     await this.getMatchOrThrow(tournamentId, matchId);
     await this.db.query(`DELETE FROM tournament_matches WHERE id = $1`, [matchId]);
     return { success: true };
   }
 
   async generateFixture(tournamentId: string, userId: string, dto: GenerateFixtureDto) {
-    await this.getById(tournamentId);
-    await this.assertManagerRole(userId);
+    const tournament = await this.getById(tournamentId);
+    await this.assertCanManageTournament(tournamentId, userId);
 
     const approved = await this.db.query(
       `SELECT id, player1_name, player2_name FROM tournament_registrations
@@ -628,7 +734,13 @@ export class TournamentsService {
 
     const label = (t: any) => `${t.player1_name} / ${t.player2_name}`;
     const mode = dto.mode || 'ROUND_ROBIN';
-    const matches: { a: any; b: any; round: number; roundLabel: string }[] = [];
+    const matches: {
+      a: any;
+      b: any;
+      round: number;
+      roundLabel: string;
+      courtLabel?: string | null;
+    }[] = [];
 
     if (mode === 'ROUND_ROBIN') {
       let round = 1;
@@ -637,6 +749,47 @@ export class TournamentsService {
           matches.push({ a: teams[a], b: teams[b], round, roundLabel: `Fecha ${round}` });
           round++;
         }
+      }
+    } else if (mode === 'OPEN_COURT') {
+      // Todos contra todos empaquetados en turnos según canchas disponibles
+      const courts = Math.max(1, Number(tournament.courts_available) || 2);
+      const n = teams.length;
+      const withBye = n % 2 === 1 ? [...teams, null] : [...teams];
+      const total = withBye.length;
+      const half = total / 2;
+      const roundCount = total - 1;
+      let arr = [...withBye];
+      let globalRound = 1;
+
+      for (let r = 0; r < roundCount; r++) {
+        const pairs: { a: any; b: any }[] = [];
+        for (let i = 0; i < half; i++) {
+          const a = arr[i];
+          const b = arr[total - 1 - i];
+          if (a && b) pairs.push({ a, b });
+        }
+
+        for (let offset = 0; offset < pairs.length; offset += courts) {
+          const batch = pairs.slice(offset, offset + courts);
+          const needsSub =
+            pairs.length > courts ? `.${Math.floor(offset / courts) + 1}` : '';
+          batch.forEach((p, courtIdx) => {
+            matches.push({
+              a: p.a,
+              b: p.b,
+              round: globalRound,
+              roundLabel: `Turno ${r + 1}${needsSub}`,
+              courtLabel: `Cancha ${courtIdx + 1}`,
+            });
+          });
+          globalRound++;
+        }
+
+        const fixed = arr[0];
+        const rest = arr.slice(1);
+        const last = rest.pop();
+        if (last !== undefined) rest.unshift(last);
+        arr = [fixed, ...rest];
       }
     } else {
       // Eliminación directa (primera ronda)
@@ -651,9 +804,18 @@ export class TournamentsService {
     for (const m of matches) {
       await this.db.query(
         `INSERT INTO tournament_matches
-          (tournament_id, round, round_label, team_a_registration_id, team_b_registration_id, team_a_name, team_b_name)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [tournamentId, m.round, m.roundLabel, m.a.id, m.b.id, label(m.a), label(m.b)],
+          (tournament_id, round, round_label, court_label, team_a_registration_id, team_b_registration_id, team_a_name, team_b_name)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          tournamentId,
+          m.round,
+          m.roundLabel,
+          m.courtLabel ?? null,
+          m.a.id,
+          m.b.id,
+          label(m.a),
+          label(m.b),
+        ],
       );
     }
 
@@ -726,7 +888,7 @@ export class TournamentsService {
 
   async addPhoto(tournamentId: string, userId: string, dto: CreateTournamentPhotoDto) {
     await this.getById(tournamentId);
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     this.validatePhotoPayload(dto.photoUrl);
     const upload = await this.uploadTournamentImage(tournamentId, dto.photoUrl);
     const result = await this.db.query(
@@ -753,7 +915,7 @@ export class TournamentsService {
 
   async deletePhoto(tournamentId: string, photoId: string, userId: string) {
     await this.getById(tournamentId);
-    await this.assertManagerRole(userId);
+    await this.assertCanManageTournament(tournamentId, userId);
     const photoResult = await this.db.query(
       `SELECT id, cloudinary_public_id FROM tournament_photos WHERE id = $1 AND tournament_id = $2`,
       [photoId, tournamentId],
@@ -778,19 +940,29 @@ export class TournamentsService {
     return role;
   }
 
-  private async assertManagerRole(userId: string) {
+  private async assertCanCreateEvents(userId: string) {
     const role = await this.getRole(userId);
-    if (!MANAGER_ROLES.includes(role)) {
-      throw new ForbiddenException('Solo cuentas de organizador pueden realizar esta acción');
+    if (!EVENT_CREATOR_ROLES.includes(role)) {
+      throw new ForbiddenException('No tenés permiso para crear torneos');
     }
   }
 
-  private async isManager(userId: string): Promise<boolean> {
-    try {
-      const role = await this.getRole(userId);
-      return MANAGER_ROLES.includes(role);
-    } catch {
-      return false;
+  private async canManageTournament(tournamentId: string, userId: string): Promise<boolean> {
+    const role = await this.getRole(userId);
+    if (role === 'SUPER_ADMIN' || role === 'CLUB_ADMIN') return true;
+    const result = await this.db.query(
+      `SELECT organizer_user_id FROM tournaments WHERE id = $1`,
+      [tournamentId],
+    );
+    const tournament = result.rows[0];
+    if (!tournament) return false;
+    return tournament.organizer_user_id === userId;
+  }
+
+  private async assertCanManageTournament(tournamentId: string, userId: string) {
+    const ok = await this.canManageTournament(tournamentId, userId);
+    if (!ok) {
+      throw new ForbiddenException('Solo el organizador de este torneo puede realizar esta acción');
     }
   }
 

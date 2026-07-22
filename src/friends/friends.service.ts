@@ -1,14 +1,17 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class FriendsService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async resolveUserId(playerOrUserId: string): Promise<string> {
     const byUser = await this.db.query(`SELECT id FROM users WHERE id = $1`, [playerOrUserId]);
@@ -89,6 +92,19 @@ export class FriendsService {
        RETURNING id, status, created_at`,
       [userId, otherUserId],
     );
+    const requester = await this.db.query(`SELECT name FROM users WHERE id = $1`, [userId]);
+    const requesterName = requester.rows[0]?.name || 'Alguien';
+    await this.notifications.create({
+      userId: otherUserId,
+      type: 'FRIEND_REQUEST',
+      title: 'Nueva solicitud de amistad',
+      body: `${requesterName} quiere ser tu amigo`,
+      data: {
+        requestId: result.rows[0].id,
+        fromUserId: userId,
+        fromUserName: requesterName,
+      },
+    });
     return result.rows[0];
   }
 

@@ -12,7 +12,9 @@ import { BadgesService } from '../badges/badges.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { isClubRole } from '../common/roles';
 import { defaultLevelBand, getCategoryLevelRange } from '../common/utils/level-range.util';
-import { CreateMatchDto } from './dto/create-match.dto';
+import { resolveVisibleLevelCategory, resolvePlayerRating, PLACEMENT_ELO_K_FACTOR, PLACEMENT_MATCHES_REQUIRED, resolveMatchGenderFromPartner, type MatchGender } from '../common/utils';
+import { CreateMatchDto, type CourtBookingMode } from './dto/create-match.dto';
+import { ListOpenMatchesQueryDto } from './dto/list-open-matches.query.dto';
 import { MatchInviteDto } from './dto/match-invite.dto';
 import { CreateMatchResultDto } from './dto/create-match-result.dto';
 import { ConfirmMatchResultDto } from './dto/confirm-match-result.dto';
@@ -21,9 +23,11 @@ import { PlayerRatingDto } from './dto/player-rating.dto';
 import { UpdateMatchStatusDto } from './dto/update-match-status.dto';
 import { MatchesRepository } from './matches.repository';
 import { PaymentsService } from '../payments/payments.service';
-import { resolvePlayerRating, PLACEMENT_ELO_K_FACTOR, PLACEMENT_MATCHES_REQUIRED, resolveMatchGenderFromPartner, type MatchGender } from '../common/utils';
 import { parseBestOfThreeSets } from '../common/utils/match-result.util';
 import { computeMatchRatingChanges, splitParticipantsByTeam } from '../rating/engine';
+
+const DEFAULT_SEARCH_RADIUS_KM = 30;
+const MAX_SEARCH_RADIUS_KM = 100;
 
 @Injectable()
 export class MatchesService {
@@ -39,6 +43,33 @@ export class MatchesService {
 
   private static readonly LEAVABLE_STATUSES = ['OPEN', 'FULL', 'CONFIRMED'] as const;
   private static readonly ACTIVE_PLAYER_STATUSES = ['JOINED', 'CONFIRMED', 'REQUESTED'] as const;
+
+  private resolveCourtBooking(dto: CreateMatchDto): CourtBookingMode {
+    if (dto.courtBooking) return dto.courtBooking;
+    if (dto.courtSlotId) return 'in_app';
+    if (dto.venueNote?.trim()) return 'external';
+    return 'none';
+  }
+
+  private validateCourtBooking(dto: CreateMatchDto, booking: CourtBookingMode) {
+    if (booking === 'in_app') {
+      if (!dto.clubId || !dto.courtSlotId) {
+        throw new BadRequestException('La reserva en la app requiere club y turno de cancha');
+      }
+      return;
+    }
+
+    if (dto.courtSlotId) {
+      throw new BadRequestException('El turno de cancha solo aplica a reserva en la app');
+    }
+
+    if (booking === 'external') {
+      const hasVenue = Boolean(dto.venueNote?.trim() || dto.zone?.trim());
+      if (!hasVenue) {
+        throw new BadRequestException('Indicá dónde reservaste la cancha (nota o zona)');
+      }
+    }
+  }
 
   async resolveGenderForInvites(
     userId: string,
@@ -82,6 +113,13 @@ export class MatchesService {
       }
     }
 
+    const courtBooking = this.resolveCourtBooking(dto);
+    this.validateCourtBooking(dto, courtBooking);
+    dto.courtBooking = courtBooking;
+    if (courtBooking !== 'external') {
+      dto.venueNote = undefined;
+    }
+
     if (dto.courtSlotId && !dto.clubId) {
       throw new BadRequestException('El turno de cancha requiere un club');
     }
@@ -112,6 +150,62 @@ export class MatchesService {
     const detail = await this.matchesRepository.getDetail(match.id);
     this.realtimeGateway.emitMatchUpdated(detail);
     return detail;
+  }
+
+  async listOpenMatches(viewerUserId: string, query: ListOpenMatchesQueryDto) {
+    await this.refreshExpiredCourtWindows();
+
+    const category = await this.resolveViewerCategory(viewerUserId, query.category);
+    const band = getCategoryLevelRange(category);
+
+    let lat = query.lat != null && Number.isFinite(Number(query.lat)) ? Number(query.lat) : null;
+    let lng = query.lng != null && Number.isFinite(Number(query.lng)) ? Number(query.lng) : null;
+
+    if (lat != null && lng != null) {
+      await this.matchesRepository.savePlayerCoordinates(viewerUserId, lat, lng);
+    } else {
+      const stored = await this.matchesRepository.getPlayerCoordinatesByUserId(viewerUserId);
+      lat = stored.lat;
+      lng = stored.lng;
+    }
+
+    const radiusKm = this.normalizeSearchRadius(query.radiusKm);
+
+    const rows = await this.matchesRepository.listOpenForSearch({
+      categoryMin: band.min,
+      categoryMax: band.max,
+      lat,
+      lng,
+      radiusKm: lat != null && lng != null ? radiusKm : null,
+      zone: query.zone,
+      limit: 50,
+    });
+
+    return {
+      category,
+      radiusKm: lat != null && lng != null ? radiusKm : null,
+      matches: rows,
+    };
+  }
+
+  private normalizeSearchRadius(radiusKm?: number): number {
+    if (radiusKm == null || !Number.isFinite(radiusKm) || radiusKm <= 0) {
+      return DEFAULT_SEARCH_RADIUS_KM;
+    }
+    return Math.min(radiusKm, MAX_SEARCH_RADIUS_KM);
+  }
+
+  private async resolveViewerCategory(userId: string, requested?: string): Promise<string> {
+    if (requested?.trim()) return requested.trim();
+
+    const placement = await this.matchesRepository.getPlayerPlacementBandByUserId(userId);
+    if (!placement) return '5ta';
+
+    return resolveVisibleLevelCategory({
+      rating: placement.rating,
+      categoryStatus: placement.categoryStatus,
+      declaredCategory: placement.declaredCategory,
+    });
   }
 
   async findOne(id: string, viewerUserId?: string) {

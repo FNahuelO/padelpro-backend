@@ -29,7 +29,7 @@ export class CircuitsService {
   }
 
   async create(userId: string, dto: CreateCircuitDto) {
-    await this.assertOrganizerRole(userId);
+    await this.assertCanCreateEvents(userId);
     const result = await this.db.query(
       `INSERT INTO circuits (name, description, season, status, created_by_user_id, start_date, end_date)
        VALUES ($1, $2, $3, COALESCE($4, 'DRAFT')::circuit_status, $5, $6, $7)
@@ -107,7 +107,7 @@ export class CircuitsService {
   }
 
   async addCategory(circuitId: string, userId: string, dto: AddCircuitCategoryDto) {
-    await this.assertOrganizerRole(userId);
+    await this.assertCanManageCircuit(circuitId, userId);
     await this.ensureCircuit(circuitId);
 
     const result = await this.db.query(
@@ -120,7 +120,7 @@ export class CircuitsService {
   }
 
   async addVenue(circuitId: string, userId: string, dto: AddCircuitVenueDto) {
-    await this.assertOrganizerRole(userId);
+    await this.assertCanManageCircuit(circuitId, userId);
     await this.ensureCircuit(circuitId);
 
     const club = await this.db.query(`SELECT id FROM clubs WHERE id = $1`, [dto.clubId]);
@@ -139,7 +139,7 @@ export class CircuitsService {
   }
 
   async addStage(circuitId: string, userId: string, dto: CreateCircuitStageDto) {
-    await this.assertOrganizerRole(userId);
+    await this.assertCanManageCircuit(circuitId, userId);
     await this.ensureCircuit(circuitId);
 
     const result = await this.db.query(
@@ -187,7 +187,7 @@ export class CircuitsService {
   }
 
   async publish(circuitId: string, userId: string) {
-    await this.assertOrganizerRole(userId);
+    await this.assertCanManageCircuit(circuitId, userId);
     await this.ensureCircuit(circuitId);
 
     const result = await this.db.query(
@@ -206,14 +206,35 @@ export class CircuitsService {
     }
   }
 
-  private async assertOrganizerRole(userId: string) {
+  private async getRole(userId: string): Promise<string> {
     const result = await this.db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
     const role = result.rows[0]?.role;
-    if (!role) {
-      throw new ForbiddenException('Usuario inválido');
+    if (!role) throw new ForbiddenException('Usuario inválido');
+    return role;
+  }
+
+  private async assertCanCreateEvents(userId: string) {
+    const role = await this.getRole(userId);
+    if (!['PLAYER', 'ORGANIZER', 'CLUB_ADMIN', 'SUPER_ADMIN'].includes(role)) {
+      throw new ForbiddenException('No tenés permiso para crear circuitos');
     }
-    if (!['ORGANIZER', 'SUPER_ADMIN'].includes(role)) {
-      throw new ForbiddenException('Solo cuentas de organizador pueden realizar esta acción');
+  }
+
+  private async assertCanManageCircuit(circuitId: string, userId: string) {
+    const role = await this.getRole(userId);
+    if (role === 'SUPER_ADMIN' || role === 'CLUB_ADMIN') {
+      await this.ensureCircuit(circuitId);
+      return;
+    }
+    const result = await this.db.query(
+      `SELECT created_by_user_id FROM circuits WHERE id = $1`,
+      [circuitId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Circuito no encontrado');
+    }
+    if (result.rows[0].created_by_user_id !== userId) {
+      throw new ForbiddenException('Solo el organizador de este circuito puede realizar esta acción');
     }
   }
 }
