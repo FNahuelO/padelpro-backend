@@ -136,6 +136,10 @@ export class UsersService {
       description: row.bio || '',
       photo: row.photo_url ?? undefined,
       location,
+      dni: (extras.dni as string) || undefined,
+      fejubaId: (extras.fejubaId as string) || undefined,
+      fejubaCategory: (extras.fejubaCategory as string) || undefined,
+      fejubaFound: Boolean(extras.fejubaId || extras.fejubaCategory),
       rating: currentRating,
       skillScore: currentSkillScore,
       levelCategory: resolveVisibleLevelCategory({
@@ -162,6 +166,9 @@ export class UsersService {
         courtPosition: (prefs.courtPosition as string) || undefined,
         matchType: (prefs.matchType as string) || undefined,
         preferredPlayTime: (prefs.preferredPlayTime as string) || undefined,
+        availabilityWindows: Array.isArray(prefs.availabilityWindows)
+          ? (prefs.availabilityWindows as string[])
+          : undefined,
       },
     };
   }
@@ -415,6 +422,27 @@ export class UsersService {
     if (dto.birthDate !== undefined) extras.birthDate = dto.birthDate;
     if (dto.mainClubId !== undefined) extras.mainClubId = dto.mainClubId;
     if (dto.location !== undefined) extras.location = dto.location;
+    if (dto.declaredCategory !== undefined) {
+      const hasFederatedCategory = Boolean(extras.fejubaId || extras.fejubaCategory);
+      if (hasFederatedCategory) {
+        const locked =
+          (typeof extras.declaredCategory === 'string' && extras.declaredCategory) ||
+          (typeof extras.fejubaCategory === 'string'
+            ? String(extras.fejubaCategory).match(/\b(1ra|2da|3ra|4ta|5ta|6ta|7ma|8va)\b/i)?.[1]?.toLowerCase()
+            : null);
+        if (locked && dto.declaredCategory !== locked) {
+          throw new BadRequestException('La categoría federada no se puede modificar');
+        }
+        // Si manda la misma, no hace falta tocar nada.
+        if (dto.declaredCategory != null) {
+          extras.declaredCategory = dto.declaredCategory;
+        }
+      } else if (dto.declaredCategory == null) {
+        delete extras.declaredCategory;
+      } else {
+        extras.declaredCategory = dto.declaredCategory;
+      }
+    }
 
     const bio = dto.description !== undefined ? dto.description : prow.bio;
     const city = dto.location !== undefined ? dto.location : prow.city;
@@ -469,6 +497,11 @@ export class UsersService {
       courtPosition: dto.courtPosition ?? (preferences.courtPosition as string) ?? null,
       matchType: dto.matchType ?? (preferences.matchType as string) ?? null,
       preferredPlayTime: dto.preferredPlayTime ?? (preferences.preferredPlayTime as string) ?? null,
+      availabilityWindows:
+        dto.availabilityWindows ??
+        (Array.isArray(preferences.availabilityWindows)
+          ? (preferences.availabilityWindows as string[])
+          : null),
     };
   }
 

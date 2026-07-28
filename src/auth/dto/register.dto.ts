@@ -17,11 +17,13 @@ export class RegisterDto {
   @MinLength(6)
   password: string;
 
+  @IsOptional()
   @IsString()
   @MinLength(2)
-  name: string;
+  name?: string;
 
   @ValidateIf((o: RegisterDto) => (o.role ?? 'PLAYER') === 'PLAYER')
+  @IsOptional()
   @IsString()
   @MinLength(3)
   @MaxLength(20)
@@ -29,6 +31,11 @@ export class RegisterDto {
     message: 'El nombre de usuario solo puede tener letras, números, punto y guión bajo',
   })
   nickname?: string;
+
+  @ValidateIf((o: RegisterDto) => (o.role ?? 'PLAYER') === 'PLAYER')
+  @IsString()
+  @Matches(/^\d{7,8}$/, { message: 'El DNI debe tener 7 u 8 dígitos' })
+  dni?: string;
 
   @IsOptional()
   @IsString()
@@ -38,11 +45,19 @@ export class RegisterDto {
   @IsIn(['PLAYER', 'CLUB_ADMIN', 'ORGANIZER'])
   role?: 'PLAYER' | 'CLUB_ADMIN' | 'ORGANIZER';
 
-  @ValidateIf((o: RegisterDto) => (o.role ?? 'PLAYER') === 'PLAYER')
+  @IsOptional()
   @IsIn(['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'])
   declaredCategory?: '8va' | '7ma' | '6ta' | '5ta' | '4ta' | '3ra' | '2da' | '1ra';
 
-  @ValidateIf((o: RegisterDto) => (o.role ?? 'PLAYER') === 'PLAYER')
+  @IsOptional()
   @IsIn(['Masculino', 'Femenino', 'Otro'])
   gender?: 'Masculino' | 'Femenino' | 'Otro';
+
+  @IsOptional()
+  @IsString()
+  fejubaId?: string;
+
+  @IsOptional()
+  @IsString()
+  fejubaCategory?: string;
 }

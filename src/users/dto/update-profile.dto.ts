@@ -1,4 +1,4 @@
-import { IsDateString, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import { IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -28,6 +28,10 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsUUID()
   mainClubId?: string | null;
+
+  @IsOptional()
+  @IsIn(['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'])
+  declaredCategory?: '8va' | '7ma' | '6ta' | '5ta' | '4ta' | '3ra' | '2da' | '1ra' | null;
 
   @IsOptional()
   @IsNumber()

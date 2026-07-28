@@ -13,7 +13,12 @@ import { UpdateClubRewardDto } from './dto/update-club-reward.dto';
 import { UpdateShopStockDto } from './dto/update-shop-stock.dto';
 
 type RankingPeriod = 'weekly' | 'monthly' | 'annual';
+import { CreateCourtDto } from './dto/create-court.dto';
+import { CreateCourtScheduleDto } from './dto/create-court-schedule.dto';
 import { CreateCourtSlotDto } from './dto/create-court-slot.dto';
+import { GenerateCourtSlotsDto } from './dto/generate-court-slots.dto';
+import { UpdateCourtDto } from './dto/update-court.dto';
+import { UpdateCourtScheduleDto } from './dto/update-court-schedule.dto';
 import { UpdateCourtSlotDto } from './dto/update-court-slot.dto';
 import { UpdateClubDto } from './dto/update-club.dto';
 
@@ -157,7 +162,32 @@ export class ClubsService {
         dto.longitude ?? null,
       ],
     );
-    return result.rows[0];
+    const club = result.rows[0];
+    await this.db.query(
+      `INSERT INTO club_admins (club_id, user_id)
+       VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [club.id, userId],
+    );
+    return club;
+  }
+
+  async isClubAdminOf(clubId: string, userId: string): Promise<boolean> {
+    const roleResult = await this.db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
+    const role = roleResult.rows[0]?.role;
+    if (role === 'SUPER_ADMIN') return true;
+    const result = await this.db.query(
+      `SELECT 1 FROM club_admins WHERE club_id = $1 AND user_id = $2 LIMIT 1`,
+      [clubId, userId],
+    );
+    return Boolean(result.rows[0]);
+  }
+
+  async assertClubAdminOf(clubId: string, userId: string) {
+    assertClubId(clubId);
+    if (!(await this.isClubAdminOf(clubId, userId))) {
+      throw new ForbiddenException('Solo admins de este club pueden realizar esta acción');
+    }
   }
 
   async update(userId: string, clubId: string, dto: UpdateClubDto) {
@@ -209,7 +239,7 @@ export class ClubsService {
       [clubId],
     );
     const result = await this.db.query(
-      `SELECT id, club_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at
+      `SELECT id, club_id, court_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at
        FROM court_availability_slots
        WHERE club_id = $1 AND status <> 'CANCELLED'
        ORDER BY slot_date ASC, start_hour ASC`,
@@ -251,19 +281,19 @@ export class ClubsService {
       throw new BadRequestException('La hora de fin debe ser posterior a la de inicio');
     }
 
-    const courtLabel = (dto.courtLabel || 'Cancha 1').trim();
-    if (!courtLabel) {
-      throw new BadRequestException('Indicá el nombre o número de cancha');
+    const court = await this.resolveCourtForSlot(clubId, dto.courtId, dto.courtLabel);
+    if (!court.active) {
+      throw new BadRequestException('La cancha está deshabilitada');
     }
 
     const bonusPoints = await this.resolveSlotBonus(clubId, dto);
 
     const result = await this.db.query(
       `INSERT INTO court_availability_slots
-         (club_id, court_label, slot_date, start_hour, end_hour, created_by_user_id, bonus_points)
-       VALUES ($1, $2, $3::date, $4, $5, $6, $7)
-       RETURNING id, club_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at`,
-      [clubId, courtLabel, dto.slotDate, dto.startHour, dto.endHour, userId, bonusPoints],
+         (club_id, court_id, court_label, slot_date, start_hour, end_hour, created_by_user_id, bonus_points)
+       VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8)
+       RETURNING id, club_id, court_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at`,
+      [clubId, court.id, court.name, dto.slotDate, dto.startHour, dto.endHour, userId, bonusPoints],
     );
     const slot = result.rows[0];
 
@@ -278,7 +308,7 @@ export class ClubsService {
   async updateCourtSlot(userId: string, clubId: string, slotId: string, dto: UpdateCourtSlotDto) {
     await this.assertClubRole(userId);
     const existing = await this.db.query(
-      `SELECT id, court_label, slot_date, start_hour, end_hour
+      `SELECT id, court_id, court_label, slot_date, start_hour, end_hour
        FROM court_availability_slots
        WHERE id = $1 AND club_id = $2 AND status <> 'CANCELLED'`,
       [slotId, clubId],
@@ -288,20 +318,25 @@ export class ClubsService {
       throw new NotFoundException('Horario no encontrado');
     }
 
-    const courtLabel = (dto.courtLabel ?? row.court_label).trim();
+    const court = await this.resolveCourtForSlot(
+      clubId,
+      dto.courtId ?? row.court_id,
+      dto.courtLabel ?? row.court_label,
+    );
+    if (!court.active) {
+      throw new BadRequestException('La cancha está deshabilitada');
+    }
+
     const slotDate = dto.slotDate ?? row.slot_date;
     const startHour = dto.startHour ?? Number(row.start_hour);
     const endHour = dto.endHour ?? Number(row.end_hour);
 
-    if (!courtLabel) {
-      throw new BadRequestException('Indicá el nombre o número de cancha');
-    }
     if (startHour >= endHour) {
       throw new BadRequestException('La hora de fin debe ser posterior a la de inicio');
     }
 
     const bonusPoints = await this.resolveSlotBonus(clubId, {
-      courtLabel,
+      courtLabel: court.name,
       slotDate: typeof slotDate === 'string' ? slotDate.slice(0, 10) : slotDate,
       startHour,
       endHour,
@@ -310,16 +345,368 @@ export class ClubsService {
 
     const result = await this.db.query(
       `UPDATE court_availability_slots
-       SET court_label = $3,
-           slot_date = $4::date,
-           start_hour = $5,
-           end_hour = $6,
-           bonus_points = $7
+       SET court_id = $3,
+           court_label = $4,
+           slot_date = $5::date,
+           start_hour = $6,
+           end_hour = $7,
+           bonus_points = $8
        WHERE id = $1 AND club_id = $2
-       RETURNING id, club_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at`,
-      [slotId, clubId, courtLabel, slotDate, startHour, endHour, bonusPoints],
+       RETURNING id, club_id, court_id, court_label, slot_date, start_hour, end_hour, status, bonus_points, created_at`,
+      [slotId, clubId, court.id, court.name, slotDate, startHour, endHour, bonusPoints],
     );
     return result.rows[0];
+  }
+
+  async listCourts(clubId: string, userId: string) {
+    await this.assertClubRole(userId);
+    await this.findOne(clubId);
+    const result = await this.db.query(
+      `SELECT c.id, c.club_id, c.name, c.active, c.has_fixed_schedule, c.sort_order, c.created_at, c.updated_at,
+              (
+                SELECT COUNT(*)::int FROM court_schedules cs
+                WHERE cs.court_id = c.id AND cs.active = TRUE
+              ) AS schedules_count
+       FROM courts c
+       WHERE c.club_id = $1
+       ORDER BY c.sort_order ASC, c.name ASC`,
+      [clubId],
+    );
+    return result.rows;
+  }
+
+  async createCourt(clubId: string, userId: string, dto: CreateCourtDto) {
+    await this.assertClubRole(userId);
+    await this.findOne(clubId);
+    const name = dto.name.trim();
+    if (!name) {
+      throw new BadRequestException('Indicá el nombre de la cancha');
+    }
+
+    try {
+      const result = await this.db.query(
+        `INSERT INTO courts (club_id, name, active, has_fixed_schedule, sort_order)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, club_id, name, active, has_fixed_schedule, sort_order, created_at, updated_at`,
+        [
+          clubId,
+          name,
+          dto.active ?? true,
+          dto.hasFixedSchedule ?? false,
+          dto.sortOrder ?? 0,
+        ],
+      );
+      return result.rows[0];
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        throw new BadRequestException('Ya existe una cancha con ese nombre');
+      }
+      throw err;
+    }
+  }
+
+  async updateCourt(clubId: string, userId: string, courtId: string, dto: UpdateCourtDto) {
+    await this.assertClubRole(userId);
+    const existing = await this.getCourtOrThrow(clubId, courtId);
+
+    const name = dto.name != null ? dto.name.trim() : existing.name;
+    if (!name) {
+      throw new BadRequestException('Indicá el nombre de la cancha');
+    }
+
+    const active = dto.active ?? existing.active;
+    const hasFixedSchedule = dto.hasFixedSchedule ?? existing.has_fixed_schedule;
+    const sortOrder = dto.sortOrder ?? existing.sort_order;
+
+    let result;
+    try {
+      result = await this.db.query(
+        `UPDATE courts
+         SET name = $3,
+             active = $4,
+             has_fixed_schedule = $5,
+             sort_order = $6,
+             updated_at = NOW()
+         WHERE id = $1 AND club_id = $2
+         RETURNING id, club_id, name, active, has_fixed_schedule, sort_order, created_at, updated_at`,
+        [courtId, clubId, name, active, hasFixedSchedule, sortOrder],
+      );
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        throw new BadRequestException('Ya existe una cancha con ese nombre');
+      }
+      throw err;
+    }
+
+    const court = result.rows[0];
+    if (!court) {
+      throw new NotFoundException('Cancha no encontrada');
+    }
+
+    if (name !== existing.name) {
+      await this.db.query(
+        `UPDATE court_availability_slots
+         SET court_label = $3
+         WHERE court_id = $1 AND club_id = $2 AND status <> 'CANCELLED'`,
+        [courtId, clubId, name],
+      );
+    }
+
+    if (existing.active && !active) {
+      await this.db.query(
+        `UPDATE court_availability_slots
+         SET status = 'CANCELLED'
+         WHERE court_id = $1 AND club_id = $2 AND status = 'OPEN'
+           AND slot_date >= CURRENT_DATE`,
+        [courtId, clubId],
+      );
+    }
+
+    return court;
+  }
+
+  async deleteCourt(clubId: string, userId: string, courtId: string) {
+    await this.assertClubRole(userId);
+    await this.getCourtOrThrow(clubId, courtId);
+
+    const booked = await this.db.query(
+      `SELECT id FROM court_availability_slots
+       WHERE court_id = $1 AND club_id = $2 AND status = 'BOOKED'
+       LIMIT 1`,
+      [courtId, clubId],
+    );
+    if (booked.rows[0]) {
+      throw new BadRequestException(
+        'No se puede eliminar: hay turnos reservados. Deshabilitá la cancha en su lugar.',
+      );
+    }
+
+    await this.db.query(
+      `UPDATE court_availability_slots
+       SET status = 'CANCELLED'
+       WHERE court_id = $1 AND club_id = $2 AND status = 'OPEN'`,
+      [courtId, clubId],
+    );
+
+    await this.db.query(`DELETE FROM courts WHERE id = $1 AND club_id = $2`, [courtId, clubId]);
+    return { ok: true };
+  }
+
+  async listCourtSchedules(clubId: string, userId: string, courtId: string) {
+    await this.assertClubRole(userId);
+    await this.getCourtOrThrow(clubId, courtId);
+    const result = await this.db.query(
+      `SELECT id, court_id, day_of_week, start_hour, end_hour, active, created_at
+       FROM court_schedules
+       WHERE court_id = $1
+       ORDER BY day_of_week ASC, start_hour ASC`,
+      [courtId],
+    );
+    return result.rows;
+  }
+
+  async createCourtSchedule(
+    clubId: string,
+    userId: string,
+    courtId: string,
+    dto: CreateCourtScheduleDto,
+  ) {
+    await this.assertClubRole(userId);
+    await this.getCourtOrThrow(clubId, courtId);
+
+    if (dto.startHour >= dto.endHour) {
+      throw new BadRequestException('La hora de fin debe ser posterior a la de inicio');
+    }
+
+    try {
+      const result = await this.db.query(
+        `INSERT INTO court_schedules (court_id, day_of_week, start_hour, end_hour, active)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, court_id, day_of_week, start_hour, end_hour, active, created_at`,
+        [courtId, dto.dayOfWeek, dto.startHour, dto.endHour, dto.active ?? true],
+      );
+
+      await this.db.query(
+        `UPDATE courts SET has_fixed_schedule = TRUE, updated_at = NOW() WHERE id = $1`,
+        [courtId],
+      );
+
+      return result.rows[0];
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        throw new BadRequestException('Ese horario fijo ya existe para este día');
+      }
+      throw err;
+    }
+  }
+
+  async updateCourtSchedule(
+    clubId: string,
+    userId: string,
+    courtId: string,
+    scheduleId: string,
+    dto: UpdateCourtScheduleDto,
+  ) {
+    await this.assertClubRole(userId);
+    await this.getCourtOrThrow(clubId, courtId);
+
+    const existing = await this.db.query(
+      `SELECT id, day_of_week, start_hour, end_hour, active
+       FROM court_schedules WHERE id = $1 AND court_id = $2`,
+      [scheduleId, courtId],
+    );
+    const row = existing.rows[0];
+    if (!row) {
+      throw new NotFoundException('Horario fijo no encontrado');
+    }
+
+    const dayOfWeek = dto.dayOfWeek ?? row.day_of_week;
+    const startHour = dto.startHour ?? Number(row.start_hour);
+    const endHour = dto.endHour ?? Number(row.end_hour);
+    const active = dto.active ?? row.active;
+
+    if (startHour >= endHour) {
+      throw new BadRequestException('La hora de fin debe ser posterior a la de inicio');
+    }
+
+    try {
+      const result = await this.db.query(
+        `UPDATE court_schedules
+         SET day_of_week = $3, start_hour = $4, end_hour = $5, active = $6
+         WHERE id = $1 AND court_id = $2
+         RETURNING id, court_id, day_of_week, start_hour, end_hour, active, created_at`,
+        [scheduleId, courtId, dayOfWeek, startHour, endHour, active],
+      );
+      return result.rows[0];
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        throw new BadRequestException('Ese horario fijo ya existe para este día');
+      }
+      throw err;
+    }
+  }
+
+  async deleteCourtSchedule(clubId: string, userId: string, courtId: string, scheduleId: string) {
+    await this.assertClubRole(userId);
+    await this.getCourtOrThrow(clubId, courtId);
+
+    const result = await this.db.query(
+      `DELETE FROM court_schedules WHERE id = $1 AND court_id = $2 RETURNING id`,
+      [scheduleId, courtId],
+    );
+    if (!result.rows[0]) {
+      throw new NotFoundException('Horario fijo no encontrado');
+    }
+
+    const remaining = await this.db.query(
+      `SELECT id FROM court_schedules WHERE court_id = $1 AND active = TRUE LIMIT 1`,
+      [courtId],
+    );
+    if (!remaining.rows[0]) {
+      await this.db.query(
+        `UPDATE courts SET has_fixed_schedule = FALSE, updated_at = NOW() WHERE id = $1`,
+        [courtId],
+      );
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Materializa turnos OPEN a partir de los horarios fijos activos de la cancha.
+   * Usa court_duration_hours del club (default 1.5h) para partir cada franja.
+   */
+  async generateSlotsFromSchedules(
+    clubId: string,
+    userId: string,
+    courtId: string,
+    dto: GenerateCourtSlotsDto,
+  ) {
+    await this.assertClubRole(userId);
+    const court = await this.getCourtOrThrow(clubId, courtId);
+
+    if (!court.active) {
+      throw new BadRequestException('La cancha está deshabilitada');
+    }
+
+    const schedules = await this.db.query(
+      `SELECT day_of_week, start_hour, end_hour
+       FROM court_schedules
+       WHERE court_id = $1 AND active = TRUE
+       ORDER BY day_of_week ASC, start_hour ASC`,
+      [courtId],
+    );
+    if (!schedules.rows.length) {
+      throw new BadRequestException('Configurá al menos un horario fijo activo');
+    }
+
+    const clubMeta = await this.db.query(
+      `SELECT COALESCE(court_duration_hours, 1.5)::float AS duration
+       FROM clubs WHERE id = $1`,
+      [clubId],
+    );
+    const duration = Number(clubMeta.rows[0]?.duration) || 1.5;
+    const daysAhead = dto.daysAhead ?? 7;
+
+    let created = 0;
+    let skipped = 0;
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+
+    for (let offset = 0; offset < daysAhead; offset += 1) {
+      const date = new Date(today);
+      date.setDate(today.getDate() + offset);
+      const dayOfWeek = date.getDay();
+      const slotDate = date.toISOString().slice(0, 10);
+
+      const daySchedules = schedules.rows.filter((s) => Number(s.day_of_week) === dayOfWeek);
+      for (const schedule of daySchedules) {
+        const windowStart = Number(schedule.start_hour);
+        const windowEnd = Number(schedule.end_hour);
+
+        for (let start = windowStart; start + duration <= windowEnd + 1e-9; start += duration) {
+          const end = Math.round((start + duration) * 10) / 10;
+          if (end > windowEnd + 1e-9) break;
+
+          const overlap = await this.db.query(
+            `SELECT id FROM court_availability_slots
+             WHERE club_id = $1
+               AND status <> 'CANCELLED'
+               AND slot_date = $2::date
+               AND (
+                 (court_id = $3)
+                 OR (court_id IS NULL AND TRIM(court_label) = $4)
+               )
+               AND start_hour < $6
+               AND end_hour > $5
+             LIMIT 1`,
+            [clubId, slotDate, courtId, court.name, start, end],
+          );
+
+          if (overlap.rows[0]) {
+            skipped += 1;
+            continue;
+          }
+
+          await this.db.query(
+            `INSERT INTO court_availability_slots
+               (club_id, court_id, court_label, slot_date, start_hour, end_hour, created_by_user_id, bonus_points)
+             VALUES ($1, $2, $3, $4::date, $5, $6, $7, 0)`,
+            [clubId, courtId, court.name, slotDate, start, end, userId],
+          );
+          created += 1;
+        }
+      }
+    }
+
+    if (!court.has_fixed_schedule) {
+      await this.db.query(
+        `UPDATE courts SET has_fixed_schedule = TRUE, updated_at = NOW() WHERE id = $1`,
+        [courtId],
+      );
+    }
+
+    return { created, skipped, daysAhead, duration };
   }
 
   async deleteCourtSlot(userId: string, clubId: string, slotId: string) {
@@ -1180,6 +1567,66 @@ export class ClubsService {
 
   private async resolveSlotBonus(_clubId: string, _dto: CreateCourtSlotDto): Promise<number> {
     return 0;
+  }
+
+  private async getCourtOrThrow(clubId: string, courtId: string) {
+    assertClubId(clubId);
+    if (!courtId || !UUID_RE.test(courtId)) {
+      throw new BadRequestException('ID de cancha inválido');
+    }
+    const result = await this.db.query(
+      `SELECT id, club_id, name, active, has_fixed_schedule, sort_order, created_at, updated_at
+       FROM courts WHERE id = $1 AND club_id = $2`,
+      [courtId, clubId],
+    );
+    const court = result.rows[0];
+    if (!court) {
+      throw new NotFoundException('Cancha no encontrada');
+    }
+    return court as {
+      id: string;
+      club_id: string;
+      name: string;
+      active: boolean;
+      has_fixed_schedule: boolean;
+      sort_order: number;
+      created_at: string;
+      updated_at: string;
+    };
+  }
+
+  /** Resuelve cancha por id o label; crea la fila si solo viene el label. */
+  private async resolveCourtForSlot(
+    clubId: string,
+    courtId?: string | null,
+    courtLabel?: string | null,
+  ) {
+    if (courtId) {
+      return this.getCourtOrThrow(clubId, courtId);
+    }
+
+    const name = (courtLabel || 'Cancha 1').trim();
+    if (!name) {
+      throw new BadRequestException('Indicá el nombre o número de cancha');
+    }
+
+    const existing = await this.db.query(
+      `SELECT id, club_id, name, active, has_fixed_schedule, sort_order, created_at, updated_at
+       FROM courts WHERE club_id = $1 AND name = $2`,
+      [clubId, name],
+    );
+    if (existing.rows[0]) {
+      return existing.rows[0];
+    }
+
+    const created = await this.db.query(
+      `INSERT INTO courts (club_id, name, active, has_fixed_schedule, sort_order)
+       VALUES ($1, $2, TRUE, FALSE, 0)
+       ON CONFLICT (club_id, name) DO UPDATE SET updated_at = NOW()
+       RETURNING id, club_id, name, active, has_fixed_schedule, sort_order, created_at, updated_at`,
+      [clubId, name],
+    );
+    return created.rows[0];
   }
 
   private formatHourLabel(hour: number): string {

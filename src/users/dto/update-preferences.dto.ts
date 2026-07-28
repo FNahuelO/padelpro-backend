@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsArray, IsOptional, IsString } from 'class-validator';
 
 export class UpdatePreferencesDto {
   @IsOptional()
@@ -16,4 +16,9 @@ export class UpdatePreferencesDto {
   @IsOptional()
   @IsString()
   preferredPlayTime?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  availabilityWindows?: string[] | null;
 }

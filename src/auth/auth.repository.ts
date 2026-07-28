@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
+  getInitialRatingForCategory,
   PLACEMENT_INITIAL_RATING,
+  PLACEMENT_MATCHES_REQUIRED,
   type PlayerCategory,
 } from '../common/utils';
 
@@ -86,6 +88,10 @@ export class AuthRepository {
       declaredCategory?: PlayerCategory | null;
       nickname?: string | null;
       gender?: string | null;
+      dni?: string | null;
+      fejubaId?: string | null;
+      fejubaCategory?: string | null;
+      startInPlacement?: boolean;
     },
   ) {
     const declaredCategory = options?.declaredCategory ?? null;
@@ -94,13 +100,23 @@ export class AuthRepository {
     const extrasPayload: Record<string, string> = {};
     if (declaredCategory != null) extrasPayload.declaredCategory = declaredCategory;
     if (gender != null) extrasPayload.gender = gender;
+    if (options?.dni) extrasPayload.dni = options.dni;
+    if (options?.fejubaId) extrasPayload.fejubaId = options.fejubaId;
+    if (options?.fejubaCategory) {
+      extrasPayload.fejubaCategory = options.fejubaCategory;
+      extrasPayload.fejubaSyncedAt = new Date().toISOString();
+    }
     const extras =
       Object.keys(extrasPayload).length > 0 ? JSON.stringify(extrasPayload) : null;
-    // Solo jugadores con categoría declarada entran en nivelación.
-    const startsInPlacement = declaredCategory != null;
+    // Federados (FEJUBA): categoría confirmada, sin nivelación.
+    // No federados: nivelación provisional (5 partidos competitivos).
+    const isFederated = Boolean(options?.fejubaId || options?.fejubaCategory);
+    const startsInPlacement = !isFederated && options?.startInPlacement === true;
     const categoryStatus = startsInPlacement ? 'provisional' : 'confirmed';
-    const placementMatchesPlayed = startsInPlacement ? 0 : 5;
-    const rating = startsInPlacement ? PLACEMENT_INITIAL_RATING : 1000;
+    const placementMatchesPlayed = startsInPlacement ? 0 : PLACEMENT_MATCHES_REQUIRED;
+    const rating = startsInPlacement
+      ? PLACEMENT_INITIAL_RATING
+      : getInitialRatingForCategory(declaredCategory);
 
     await this.db.query(
       `INSERT INTO players (

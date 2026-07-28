@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { TournamentsService } from '../tournaments/tournaments.service';
 import { ClubCommentsService } from './club-comments.service';
 import { ClubsService } from './clubs.service';
 import { CreateClubCommentDto } from './dto/create-club-comment.dto';
@@ -8,10 +9,15 @@ import { CreateClubDto } from './dto/create-club.dto';
 import { CreateClubPromotionDto } from './dto/create-club-promotion.dto';
 import { CreateClubRewardDto } from './dto/create-club-reward.dto';
 import { UpdateClubRewardDto } from './dto/update-club-reward.dto';
+import { CreateCourtDto } from './dto/create-court.dto';
+import { CreateCourtScheduleDto } from './dto/create-court-schedule.dto';
 import { CreateCourtSlotDto } from './dto/create-court-slot.dto';
 import { CreateShopCouponDto } from './dto/create-shop-coupon.dto';
 import { CreateShopProductDto } from './dto/create-shop-product.dto';
+import { GenerateCourtSlotsDto } from './dto/generate-court-slots.dto';
 import { UpdateShopProductDto } from './dto/update-shop-product.dto';
+import { UpdateCourtDto } from './dto/update-court.dto';
+import { UpdateCourtScheduleDto } from './dto/update-court-schedule.dto';
 import { UpdateCourtSlotDto } from './dto/update-court-slot.dto';
 import { UpdateShopStockDto } from './dto/update-shop-stock.dto';
 import { UpdateClubDto } from './dto/update-club.dto';
@@ -21,6 +27,7 @@ export class ClubsController {
   constructor(
     private readonly clubsService: ClubsService,
     private readonly clubCommentsService: ClubCommentsService,
+    private readonly tournamentsService: TournamentsService,
   ) {}
 
   @Get()
@@ -45,6 +52,15 @@ export class ClubsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.clubsService.findOne(id);
+  }
+
+  @Get(':id/tournament-validations')
+  @UseGuards(JwtAuthGuard)
+  listTournamentValidations(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.listPendingClubValidations(id, user.sub);
   }
 
   @Post()
@@ -312,6 +328,98 @@ export class ClubsController {
   @UseGuards(JwtAuthGuard)
   listCourtSlots(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
     return this.clubsService.listCourtSlots(id, user.sub);
+  }
+
+  @Get(':id/courts')
+  @UseGuards(JwtAuthGuard)
+  listCourts(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
+    return this.clubsService.listCourts(id, user.sub);
+  }
+
+  @Post(':id/courts')
+  @UseGuards(JwtAuthGuard)
+  createCourt(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: CreateCourtDto,
+  ) {
+    return this.clubsService.createCourt(id, user.sub, dto);
+  }
+
+  @Patch(':id/courts/:courtId')
+  @UseGuards(JwtAuthGuard)
+  updateCourt(
+    @Param('id') id: string,
+    @Param('courtId') courtId: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: UpdateCourtDto,
+  ) {
+    return this.clubsService.updateCourt(id, user.sub, courtId, dto);
+  }
+
+  @Delete(':id/courts/:courtId')
+  @UseGuards(JwtAuthGuard)
+  deleteCourt(
+    @Param('id') id: string,
+    @Param('courtId') courtId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.clubsService.deleteCourt(id, user.sub, courtId);
+  }
+
+  @Get(':id/courts/:courtId/schedules')
+  @UseGuards(JwtAuthGuard)
+  listCourtSchedules(
+    @Param('id') id: string,
+    @Param('courtId') courtId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.clubsService.listCourtSchedules(id, user.sub, courtId);
+  }
+
+  @Post(':id/courts/:courtId/schedules')
+  @UseGuards(JwtAuthGuard)
+  createCourtSchedule(
+    @Param('id') id: string,
+    @Param('courtId') courtId: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: CreateCourtScheduleDto,
+  ) {
+    return this.clubsService.createCourtSchedule(id, user.sub, courtId, dto);
+  }
+
+  @Patch(':id/courts/:courtId/schedules/:scheduleId')
+  @UseGuards(JwtAuthGuard)
+  updateCourtSchedule(
+    @Param('id') id: string,
+    @Param('courtId') courtId: string,
+    @Param('scheduleId') scheduleId: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: UpdateCourtScheduleDto,
+  ) {
+    return this.clubsService.updateCourtSchedule(id, user.sub, courtId, scheduleId, dto);
+  }
+
+  @Delete(':id/courts/:courtId/schedules/:scheduleId')
+  @UseGuards(JwtAuthGuard)
+  deleteCourtSchedule(
+    @Param('id') id: string,
+    @Param('courtId') courtId: string,
+    @Param('scheduleId') scheduleId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.clubsService.deleteCourtSchedule(id, user.sub, courtId, scheduleId);
+  }
+
+  @Post(':id/courts/:courtId/generate-slots')
+  @UseGuards(JwtAuthGuard)
+  generateCourtSlots(
+    @Param('id') id: string,
+    @Param('courtId') courtId: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: GenerateCourtSlotsDto,
+  ) {
+    return this.clubsService.generateSlotsFromSchedules(id, user.sub, courtId, dto);
   }
 
   @Get(':id/matches')

@@ -4,12 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/database.service';
 import { CreateTournamentPhotoDto } from './dto/create-tournament-photo.dto';
 import {
   CreateRegistrationDto,
   CreateTournamentDateDto,
   CreateTournamentDto,
+  CreateTournamentInvitesDto,
   CreateTournamentMatchDto,
   GenerateFixtureDto,
   SetScoreDto,
@@ -19,6 +21,11 @@ import {
 import { v2 as cloudinary } from 'cloudinary';
 
 const EVENT_CREATOR_ROLES = ['PLAYER', 'ORGANIZER', 'CLUB_ADMIN', 'SUPER_ADMIN'];
+
+type TournamentViewer = {
+  userId?: string | null;
+  inviteToken?: string | null;
+};
 
 @Injectable()
 export class TournamentsService {
@@ -36,14 +43,41 @@ export class TournamentsService {
 
   async create(userId: string, dto: CreateTournamentDto) {
     await this.assertCanCreateEvents(userId);
+    const modality = dto.modality;
     const price = dto.price ?? null;
+
+    let clubId: string | null = null;
+    let status: string;
+    let clubValidationStatus: string;
+    let inviteToken: string | null = null;
+
+    if (modality === 'EXTERNAL') {
+      if (!dto.clubId) {
+        throw new BadRequestException('Un torneo externo requiere un club registrado');
+      }
+      const club = await this.db.query(`SELECT id FROM clubs WHERE id = $1`, [dto.clubId]);
+      if (!club.rows[0]) {
+        throw new BadRequestException('El club indicado no está registrado');
+      }
+      clubId = dto.clubId;
+      status = 'DRAFT';
+      clubValidationStatus = 'PENDING';
+    } else {
+      inviteToken = randomBytes(24).toString('hex');
+      status = dto.status ?? 'OPEN_REGISTRATION';
+      clubValidationStatus = 'NOT_REQUIRED';
+    }
+
     const result = await this.db.query(
       `INSERT INTO tournaments
-        (club_id, name, description, category, format, gender, start_date, max_teams, courts_available, price, payment_required, rules, prizes, status, organizer_user_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,COALESCE($14,'OPEN_REGISTRATION')::tournament_status,$15)
+        (club_id, name, description, category, format, gender, start_date, max_teams,
+         courts_available, price, payment_required, rules, prizes, status, organizer_user_id,
+         modality, invite_token, club_validation_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::tournament_status,$15,
+               $16::tournament_modality,$17,$18::tournament_club_validation_status)
        RETURNING *`,
       [
-        dto.clubId ?? null,
+        clubId,
         dto.name,
         dto.description ?? null,
         dto.category ?? null,
@@ -56,8 +90,11 @@ export class TournamentsService {
         price != null && Number(price) > 0,
         dto.rules ?? null,
         dto.prizes ?? null,
-        dto.status ?? null,
+        status,
         userId,
+        modality,
+        inviteToken,
+        clubValidationStatus,
       ],
     );
     return result.rows[0];
@@ -73,8 +110,11 @@ export class TournamentsService {
                  WHERE r.tournament_id = t.id AND r.status = 'PENDING') AS pending_count
        FROM tournaments t
        LEFT JOIN clubs c ON c.id = t.club_id
+       WHERE t.modality = 'EXTERNAL'
+         AND t.club_validation_status = 'APPROVED'
+         AND t.status IN ('OPEN_REGISTRATION', 'IN_PROGRESS', 'FINISHED')
        ORDER BY
-         CASE t.status WHEN 'OPEN_REGISTRATION' THEN 0 WHEN 'IN_PROGRESS' THEN 1 WHEN 'DRAFT' THEN 2 ELSE 3 END,
+         CASE t.status WHEN 'OPEN_REGISTRATION' THEN 0 WHEN 'IN_PROGRESS' THEN 1 ELSE 2 END,
          t.start_date NULLS LAST,
          t.created_at DESC
        LIMIT 100`,
@@ -126,55 +166,16 @@ export class TournamentsService {
     return result.rows;
   }
 
-  async getById(id: string) {
-    const result = await this.db.query(
-      `SELECT t.*, c.name AS club_name
-       FROM tournaments t
-       LEFT JOIN clubs c ON c.id = t.club_id
-       WHERE t.id = $1`,
-      [id],
-    );
-    const tournament = result.rows[0];
-    if (!tournament) {
-      throw new NotFoundException('Torneo no encontrado');
-    }
+  async getById(id: string, viewer?: TournamentViewer) {
+    const tournament = await this.loadTournamentRow(id);
+    await this.assertCanViewTournament(tournament, viewer ?? {});
+    return this.buildTournamentDetail(tournament);
+  }
 
-    const [photos, dates, regCounts] = await Promise.all([
-      this.db.query(
-        `SELECT tp.id, tp.photo_url, tp.caption, tp.created_at, u.id AS uploaded_by_user_id, u.name AS uploaded_by_name
-         FROM tournament_photos tp
-         INNER JOIN users u ON u.id = tp.uploaded_by_user_id
-         WHERE tp.tournament_id = $1
-         ORDER BY tp.created_at DESC`,
-        [id],
-      ),
-      this.db.query(
-        `SELECT id, tournament_id, play_date, label, notes, created_at
-         FROM tournament_dates WHERE tournament_id = $1 ORDER BY play_date ASC`,
-        [id],
-      ),
-      this.db.query(
-        `SELECT
-           COUNT(*) FILTER (WHERE status = 'APPROVED')::int AS approved_count,
-           COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending_count,
-           COUNT(*)::int AS total_count
-         FROM tournament_registrations WHERE tournament_id = $1`,
-        [id],
-      ),
-    ]);
-
-    return {
-      ...tournament,
-      photos: photos.rows,
-      dates: dates.rows,
-      approved_count: regCounts.rows[0]?.approved_count ?? 0,
-      pending_count: regCounts.rows[0]?.pending_count ?? 0,
-      total_count: regCounts.rows[0]?.total_count ?? 0,
-      spots_left:
-        tournament.max_teams != null
-          ? Math.max(0, Number(tournament.max_teams) - Number(regCounts.rows[0]?.total_count ?? 0))
-          : null,
-    };
+  /** Detalle sin chequeo de acceso (uso interno tras assertCanManage / etc.). */
+  async getByIdUnchecked(id: string) {
+    const tournament = await this.loadTournamentRow(id);
+    return this.buildTournamentDetail(tournament);
   }
 
   async update(id: string, userId: string, dto: UpdateTournamentDto) {
@@ -205,7 +206,7 @@ export class TournamentsService {
     if (dto.prizes !== undefined) set('prizes', dto.prizes);
 
     if (fields.length === 0 && dto.status === undefined) {
-      return this.getById(id);
+      return this.getByIdUnchecked(id);
     }
 
     if (dto.status !== undefined) {
@@ -220,7 +221,7 @@ export class TournamentsService {
       `UPDATE tournaments SET ${fields.join(', ')} WHERE id = $${i}`,
       values,
     );
-    return this.getById(id);
+    return this.getByIdUnchecked(id);
   }
 
   async remove(id: string, userId: string) {
@@ -266,7 +267,16 @@ export class TournamentsService {
   // Inscripciones
   // ---------------------------------------------------------------------------
 
-  async listRegistrations(tournamentId: string, viewerUserId?: string) {
+  async listRegistrations(
+    tournamentId: string,
+    viewerUserId?: string,
+    inviteToken?: string | null,
+  ) {
+    const tournament = await this.loadTournamentRow(tournamentId);
+    await this.assertCanViewTournament(tournament, {
+      userId: viewerUserId,
+      inviteToken,
+    });
     const result = await this.db.query(
       `SELECT r.*,
               u1.name AS player1_account_name, p1.photo_url AS player1_photo,
@@ -283,12 +293,12 @@ export class TournamentsService {
       [tournamentId],
     );
 
-    const tournament = await this.db.query(
+    const organizerRow = await this.db.query(
       `SELECT organizer_user_id FROM tournaments WHERE id = $1`,
       [tournamentId],
     );
     const canSeePayments =
-      !!viewerUserId && tournament.rows[0]?.organizer_user_id === viewerUserId;
+      !!viewerUserId && organizerRow.rows[0]?.organizer_user_id === viewerUserId;
 
     if (canSeePayments) {
       return result.rows;
@@ -328,15 +338,28 @@ export class TournamentsService {
     return result.rows[0] ?? null;
   }
 
-  async register(tournamentId: string, userId: string | null, dto: CreateRegistrationDto) {
-    const tournament = await this.getById(tournamentId);
-    // El dueño del torneo puede inscribir parejas en nombre de los jugadores aunque
-    // las inscripciones no estén abiertas; al jugador final sí se le exigen los límites.
+  async register(
+    tournamentId: string,
+    userId: string | null,
+    dto: CreateRegistrationDto,
+    inviteToken?: string | null,
+  ) {
+    const tournament = await this.getByIdUnchecked(tournamentId);
     const managerRegistration =
       dto.onBehalf && userId ? await this.canManageTournament(tournamentId, userId) : false;
     if (!managerRegistration) {
+      await this.assertCanViewTournament(tournament, { userId, inviteToken });
+      if (tournament.modality === 'INTERNAL') {
+        await this.assertInternalParticipant(tournament, userId, inviteToken);
+      }
       if (tournament.status !== 'OPEN_REGISTRATION') {
         throw new BadRequestException('Las inscripciones no están abiertas');
+      }
+      if (
+        tournament.modality === 'EXTERNAL' &&
+        tournament.club_validation_status !== 'APPROVED'
+      ) {
+        throw new BadRequestException('El torneo aún no fue validado por el club');
       }
       if (tournament.spots_left != null && tournament.spots_left <= 0) {
         throw new BadRequestException('No quedan cupos disponibles');
@@ -478,7 +501,7 @@ export class TournamentsService {
       };
     }
 
-    const tournament = await this.getById(tournamentId);
+    const tournament = await this.getByIdUnchecked(tournamentId);
     const checkout = await this.createMercadoPagoPreference(
       externalReference,
       `Inscripción ${tournament.name}`,
@@ -611,7 +634,13 @@ export class TournamentsService {
   // Partidos / Fixture
   // ---------------------------------------------------------------------------
 
-  async listMatches(tournamentId: string) {
+  async listMatches(tournamentId: string, viewer?: TournamentViewer) {
+    const tournament = await this.loadTournamentRow(tournamentId);
+    await this.assertCanViewTournament(tournament, viewer ?? {});
+    return this.listMatchesUnchecked(tournamentId);
+  }
+
+  private async listMatchesUnchecked(tournamentId: string) {
     const result = await this.db.query(
       `SELECT * FROM tournament_matches WHERE tournament_id = $1
        ORDER BY round ASC, created_at ASC`,
@@ -621,7 +650,7 @@ export class TournamentsService {
   }
 
   async createMatch(tournamentId: string, userId: string, dto: CreateTournamentMatchDto) {
-    await this.getById(tournamentId);
+    await this.loadTournamentRow(tournamentId);
     await this.assertCanManageTournament(tournamentId, userId);
 
     const teamAName = dto.teamAName ?? (await this.registrationName(dto.teamARegistrationId));
@@ -715,7 +744,7 @@ export class TournamentsService {
   }
 
   async generateFixture(tournamentId: string, userId: string, dto: GenerateFixtureDto) {
-    const tournament = await this.getById(tournamentId);
+    const tournament = await this.getByIdUnchecked(tournamentId);
     await this.assertCanManageTournament(tournamentId, userId);
 
     const approved = await this.db.query(
@@ -825,10 +854,12 @@ export class TournamentsService {
       [tournamentId],
     );
 
-    return this.listMatches(tournamentId);
+    return this.listMatchesUnchecked(tournamentId);
   }
 
-  async getStandings(tournamentId: string) {
+  async getStandings(tournamentId: string, viewer?: TournamentViewer) {
+    const tournament = await this.loadTournamentRow(tournamentId);
+    await this.assertCanViewTournament(tournament, viewer ?? {});
     const [regs, matches] = await Promise.all([
       this.db.query(
         `SELECT id, player1_name, player2_name FROM tournament_registrations
@@ -887,7 +918,7 @@ export class TournamentsService {
   // ---------------------------------------------------------------------------
 
   async addPhoto(tournamentId: string, userId: string, dto: CreateTournamentPhotoDto) {
-    await this.getById(tournamentId);
+    await this.loadTournamentRow(tournamentId);
     await this.assertCanManageTournament(tournamentId, userId);
     this.validatePhotoPayload(dto.photoUrl);
     const upload = await this.uploadTournamentImage(tournamentId, dto.photoUrl);
@@ -901,7 +932,7 @@ export class TournamentsService {
   }
 
   async listPhotos(tournamentId: string) {
-    await this.getById(tournamentId);
+    await this.loadTournamentRow(tournamentId);
     const result = await this.db.query(
       `SELECT tp.id, tp.photo_url, tp.caption, tp.created_at, u.id AS uploaded_by_user_id, u.name AS uploaded_by_name
        FROM tournament_photos tp
@@ -914,7 +945,7 @@ export class TournamentsService {
   }
 
   async deletePhoto(tournamentId: string, photoId: string, userId: string) {
-    await this.getById(tournamentId);
+    await this.loadTournamentRow(tournamentId);
     await this.assertCanManageTournament(tournamentId, userId);
     const photoResult = await this.db.query(
       `SELECT id, cloudinary_public_id FROM tournament_photos WHERE id = $1 AND tournament_id = $2`,
@@ -933,6 +964,326 @@ export class TournamentsService {
   // Helpers
   // ---------------------------------------------------------------------------
 
+  private async loadTournamentRow(id: string) {
+    const result = await this.db.query(
+      `SELECT t.*, c.name AS club_name
+       FROM tournaments t
+       LEFT JOIN clubs c ON c.id = t.club_id
+       WHERE t.id = $1`,
+      [id],
+    );
+    const tournament = result.rows[0];
+    if (!tournament) {
+      throw new NotFoundException('Torneo no encontrado');
+    }
+    return tournament;
+  }
+
+  private async buildTournamentDetail(tournament: any) {
+    const id = tournament.id as string;
+    const [photos, dates, regCounts] = await Promise.all([
+      this.db.query(
+        `SELECT tp.id, tp.photo_url, tp.caption, tp.created_at, u.id AS uploaded_by_user_id, u.name AS uploaded_by_name
+         FROM tournament_photos tp
+         INNER JOIN users u ON u.id = tp.uploaded_by_user_id
+         WHERE tp.tournament_id = $1
+         ORDER BY tp.created_at DESC`,
+        [id],
+      ),
+      this.db.query(
+        `SELECT id, tournament_id, play_date, label, notes, created_at
+         FROM tournament_dates WHERE tournament_id = $1 ORDER BY play_date ASC`,
+        [id],
+      ),
+      this.db.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status = 'APPROVED')::int AS approved_count,
+           COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending_count,
+           COUNT(*)::int AS total_count
+         FROM tournament_registrations WHERE tournament_id = $1`,
+        [id],
+      ),
+    ]);
+
+    return {
+      ...tournament,
+      photos: photos.rows,
+      dates: dates.rows,
+      approved_count: regCounts.rows[0]?.approved_count ?? 0,
+      pending_count: regCounts.rows[0]?.pending_count ?? 0,
+      total_count: regCounts.rows[0]?.total_count ?? 0,
+      spots_left:
+        tournament.max_teams != null
+          ? Math.max(0, Number(tournament.max_teams) - Number(regCounts.rows[0]?.total_count ?? 0))
+          : null,
+    };
+  }
+
+  private async isClubAdminOf(clubId: string, userId: string): Promise<boolean> {
+    const role = await this.getRole(userId);
+    if (role === 'SUPER_ADMIN') return true;
+    const result = await this.db.query(
+      `SELECT 1 FROM club_admins WHERE club_id = $1 AND user_id = $2 LIMIT 1`,
+      [clubId, userId],
+    );
+    return Boolean(result.rows[0]);
+  }
+
+  private async assertClubAdminOf(clubId: string, userId: string) {
+    if (!(await this.isClubAdminOf(clubId, userId))) {
+      throw new ForbiddenException('Solo admins de este club pueden realizar esta acción');
+    }
+  }
+
+  private async isInvitedUser(tournamentId: string, userId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `SELECT 1 FROM tournament_invites
+       WHERE tournament_id = $1 AND invited_user_id = $2 AND status <> 'REVOKED'
+       LIMIT 1`,
+      [tournamentId, userId],
+    );
+    return Boolean(result.rows[0]);
+  }
+
+  private async assertCanViewTournament(tournament: any, viewer: TournamentViewer) {
+    const modality = tournament.modality || 'INTERNAL';
+    const validation = tournament.club_validation_status || 'NOT_REQUIRED';
+
+    if (modality === 'EXTERNAL' && validation === 'APPROVED') {
+      return;
+    }
+
+    const userId = viewer.userId ?? null;
+    if (userId && tournament.organizer_user_id === userId) {
+      return;
+    }
+
+    if (userId) {
+      const role = await this.getRole(userId);
+      if (role === 'SUPER_ADMIN') return;
+    }
+
+    if (modality === 'EXTERNAL' && tournament.club_id && userId) {
+      if (await this.isClubAdminOf(tournament.club_id, userId)) {
+        return;
+      }
+    }
+
+    if (modality === 'INTERNAL') {
+      if (viewer.inviteToken && tournament.invite_token === viewer.inviteToken) {
+        return;
+      }
+      if (userId && (await this.isInvitedUser(tournament.id, userId))) {
+        return;
+      }
+    }
+
+    throw new ForbiddenException('No tenés acceso a este torneo');
+  }
+
+  private async assertInternalParticipant(
+    tournament: any,
+    userId: string | null | undefined,
+    inviteToken?: string | null,
+  ) {
+    if (userId && tournament.organizer_user_id === userId) return;
+    if (inviteToken && tournament.invite_token === inviteToken) return;
+    if (userId && (await this.isInvitedUser(tournament.id, userId))) return;
+    throw new ForbiddenException('Necesitás una invitación para este torneo interno');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Invitaciones (INTERNAL)
+  // ---------------------------------------------------------------------------
+
+  async listInvites(tournamentId: string, userId: string) {
+    await this.assertCanManageTournament(tournamentId, userId);
+    const result = await this.db.query(
+      `SELECT i.*,
+              u.name AS invited_user_name,
+              p.photo_url AS invited_user_photo,
+              p.nickname AS invited_user_nickname
+       FROM tournament_invites i
+       LEFT JOIN users u ON u.id = i.invited_user_id
+       LEFT JOIN players p ON p.user_id = i.invited_user_id
+       WHERE i.tournament_id = $1 AND i.status <> 'REVOKED'
+       ORDER BY i.created_at DESC`,
+      [tournamentId],
+    );
+    return result.rows;
+  }
+
+  async createInvites(tournamentId: string, userId: string, dto: CreateTournamentInvitesDto) {
+    await this.assertCanManageTournament(tournamentId, userId);
+    const tournament = await this.loadTournamentRow(tournamentId);
+    if (tournament.modality !== 'INTERNAL') {
+      throw new BadRequestException('Solo los torneos internos admiten invitaciones');
+    }
+    const userIds = [...new Set((dto.userIds || []).filter(Boolean))];
+    if (!userIds.length) {
+      throw new BadRequestException('Indicá al menos un jugador');
+    }
+
+    const created: any[] = [];
+    for (const invitedUserId of userIds) {
+      if (invitedUserId === userId) continue;
+      const existing = await this.db.query(
+        `SELECT id FROM tournament_invites
+         WHERE tournament_id = $1 AND invited_user_id = $2`,
+        [tournamentId, invitedUserId],
+      );
+      if (existing.rows[0]) {
+        const result = await this.db.query(
+          `UPDATE tournament_invites
+           SET status = 'PENDING', invited_by_user_id = $2
+           WHERE id = $1
+           RETURNING *`,
+          [existing.rows[0].id, userId],
+        );
+        if (result.rows[0]) created.push(result.rows[0]);
+      } else {
+        const result = await this.db.query(
+          `INSERT INTO tournament_invites (tournament_id, invited_user_id, invited_by_user_id, status)
+           VALUES ($1, $2, $3, 'PENDING')
+           RETURNING *`,
+          [tournamentId, invitedUserId, userId],
+        );
+        if (result.rows[0]) created.push(result.rows[0]);
+      }
+    }
+    return created;
+  }
+
+  async revokeInvite(tournamentId: string, inviteId: string, userId: string) {
+    await this.assertCanManageTournament(tournamentId, userId);
+    const result = await this.db.query(
+      `UPDATE tournament_invites
+       SET status = 'REVOKED'
+       WHERE id = $1 AND tournament_id = $2
+       RETURNING id`,
+      [inviteId, tournamentId],
+    );
+    if (!result.rows[0]) throw new NotFoundException('Invitación no encontrada');
+    return { success: true };
+  }
+
+  async joinByInviteToken(token: string, userId: string) {
+    const result = await this.db.query(
+      `SELECT * FROM tournaments WHERE invite_token = $1 AND modality = 'INTERNAL'`,
+      [token],
+    );
+    const tournament = result.rows[0];
+    if (!tournament) {
+      throw new NotFoundException('Link de invitación inválido');
+    }
+
+    if (tournament.organizer_user_id !== userId) {
+      const existing = await this.db.query(
+        `SELECT id FROM tournament_invites
+         WHERE tournament_id = $1 AND invited_user_id = $2`,
+        [tournament.id, userId],
+      );
+      if (existing.rows[0]) {
+        await this.db.query(
+          `UPDATE tournament_invites
+           SET status = 'ACCEPTED',
+               accepted_at = COALESCE(accepted_at, NOW())
+           WHERE id = $1`,
+          [existing.rows[0].id],
+        );
+      } else {
+        await this.db.query(
+          `INSERT INTO tournament_invites
+            (tournament_id, invited_user_id, invited_by_user_id, status, accepted_at)
+           VALUES ($1, $2, $3, 'ACCEPTED', NOW())`,
+          [tournament.id, userId, tournament.organizer_user_id],
+        );
+      }
+    }
+
+    return this.buildTournamentDetail(tournament);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Validación de club (EXTERNAL)
+  // ---------------------------------------------------------------------------
+
+  async listPendingClubValidations(clubId: string, userId: string) {
+    await this.assertClubAdminOf(clubId, userId);
+    const result = await this.db.query(
+      `SELECT t.*,
+              c.name AS club_name,
+              u.name AS organizer_name,
+              (SELECT COUNT(*)::int FROM tournament_registrations r
+                 WHERE r.tournament_id = t.id) AS total_count
+       FROM tournaments t
+       LEFT JOIN clubs c ON c.id = t.club_id
+       LEFT JOIN users u ON u.id = t.organizer_user_id
+       WHERE t.club_id = $1
+         AND t.modality = 'EXTERNAL'
+         AND t.club_validation_status = 'PENDING'
+       ORDER BY t.created_at DESC`,
+      [clubId],
+    );
+    return result.rows;
+  }
+
+  async approveClubValidation(tournamentId: string, userId: string) {
+    const tournament = await this.loadTournamentRow(tournamentId);
+    if (tournament.modality !== 'EXTERNAL') {
+      throw new BadRequestException('Solo torneos externos requieren validación del club');
+    }
+    if (!tournament.club_id) {
+      throw new BadRequestException('El torneo no tiene club asignado');
+    }
+    await this.assertClubAdminOf(tournament.club_id, userId);
+    if (tournament.club_validation_status === 'APPROVED') {
+      return this.buildTournamentDetail(tournament);
+    }
+    if (tournament.club_validation_status === 'REJECTED') {
+      throw new BadRequestException('Este torneo ya fue rechazado');
+    }
+
+    const result = await this.db.query(
+      `UPDATE tournaments
+       SET club_validation_status = 'APPROVED',
+           club_validated_at = NOW(),
+           club_validated_by_user_id = $2,
+           status = 'OPEN_REGISTRATION',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [tournamentId, userId],
+    );
+    const updated = { ...result.rows[0], club_name: tournament.club_name };
+    return this.buildTournamentDetail(updated);
+  }
+
+  async rejectClubValidation(tournamentId: string, userId: string) {
+    const tournament = await this.loadTournamentRow(tournamentId);
+    if (tournament.modality !== 'EXTERNAL') {
+      throw new BadRequestException('Solo torneos externos requieren validación del club');
+    }
+    if (!tournament.club_id) {
+      throw new BadRequestException('El torneo no tiene club asignado');
+    }
+    await this.assertClubAdminOf(tournament.club_id, userId);
+
+    const result = await this.db.query(
+      `UPDATE tournaments
+       SET club_validation_status = 'REJECTED',
+           club_validated_at = NOW(),
+           club_validated_by_user_id = $2,
+           status = 'CANCELLED',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [tournamentId, userId],
+    );
+    const updated = { ...result.rows[0], club_name: tournament.club_name };
+    return this.buildTournamentDetail(updated);
+  }
+
   private async getRole(userId: string): Promise<string> {
     const result = await this.db.query(`SELECT role FROM users WHERE id = $1`, [userId]);
     const role = result.rows[0]?.role;
@@ -949,14 +1300,18 @@ export class TournamentsService {
 
   private async canManageTournament(tournamentId: string, userId: string): Promise<boolean> {
     const role = await this.getRole(userId);
-    if (role === 'SUPER_ADMIN' || role === 'CLUB_ADMIN') return true;
+    if (role === 'SUPER_ADMIN') return true;
     const result = await this.db.query(
-      `SELECT organizer_user_id FROM tournaments WHERE id = $1`,
+      `SELECT organizer_user_id, club_id FROM tournaments WHERE id = $1`,
       [tournamentId],
     );
     const tournament = result.rows[0];
     if (!tournament) return false;
-    return tournament.organizer_user_id === userId;
+    if (tournament.organizer_user_id === userId) return true;
+    if (tournament.club_id && (await this.isClubAdminOf(tournament.club_id, userId))) {
+      return true;
+    }
+    return false;
   }
 
   private async assertCanManageTournament(tournamentId: string, userId: string) {

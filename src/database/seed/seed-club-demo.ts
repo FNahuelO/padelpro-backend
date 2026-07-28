@@ -301,6 +301,13 @@ async function main() {
     );
 
     await pool.query(
+      `INSERT INTO club_admins (club_id, user_id)
+       VALUES ($1, $2), ($3, $2)
+       ON CONFLICT DO NOTHING`,
+      [PALERMO, CLUB_ADMIN_ID, NORTE],
+    );
+
+    await pool.query(
       `INSERT INTO players (
          user_id, nickname, city, zone, level, position,
          category_status, placement_matches_played

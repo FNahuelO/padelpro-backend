@@ -7,5 +7,6 @@ import { TournamentsService } from './tournaments.service';
   imports: [RealtimeModule],
   controllers: [TournamentsController],
   providers: [TournamentsService],
+  exports: [TournamentsService],
 })
 export class TournamentsModule {}

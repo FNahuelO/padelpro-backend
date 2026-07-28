@@ -20,6 +20,7 @@ import {
   CreateRegistrationDto,
   CreateTournamentDateDto,
   CreateTournamentDto,
+  CreateTournamentInvitesDto,
   CreateTournamentMatchDto,
   GenerateFixtureDto,
   SetScoreDto,
@@ -49,6 +50,12 @@ export class TournamentsController {
     @Query('status') status?: string,
   ) {
     return this.tournamentsService.listMine(user.sub, status);
+  }
+
+  @Get('join/:token')
+  @UseGuards(JwtAuthGuard)
+  joinByToken(@Param('token') token: string, @CurrentUser() user: { sub: string }) {
+    return this.tournamentsService.joinByInviteToken(token, user.sub);
   }
 
   @Get('pay/mock')
@@ -88,8 +95,16 @@ export class TournamentsController {
   }
 
   @Get(':id')
-  getById(@Param('id') id: string) {
-    return this.tournamentsService.getById(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  getById(
+    @Param('id') id: string,
+    @CurrentUser() user?: { sub: string },
+    @Query('invite') inviteToken?: string,
+  ) {
+    return this.tournamentsService.getById(id, {
+      userId: user?.sub,
+      inviteToken: inviteToken ?? null,
+    });
   }
 
   @Patch(':id')
@@ -108,6 +123,58 @@ export class TournamentsController {
   @UseGuards(JwtAuthGuard)
   remove(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
     return this.tournamentsService.remove(id, user.sub);
+  }
+
+  // --- Validación de club ---
+
+  @Post(':id/club-validation/approve')
+  @UseGuards(JwtAuthGuard)
+  async approveClubValidation(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    const updated = await this.tournamentsService.approveClubValidation(id, user.sub);
+    this.realtimeGateway.emitTournamentUpdated(updated);
+    return updated;
+  }
+
+  @Post(':id/club-validation/reject')
+  @UseGuards(JwtAuthGuard)
+  async rejectClubValidation(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    const updated = await this.tournamentsService.rejectClubValidation(id, user.sub);
+    this.realtimeGateway.emitTournamentUpdated(updated);
+    return updated;
+  }
+
+  // --- Invitaciones ---
+
+  @Get(':id/invites')
+  @UseGuards(JwtAuthGuard)
+  listInvites(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
+    return this.tournamentsService.listInvites(id, user.sub);
+  }
+
+  @Post(':id/invites')
+  @UseGuards(JwtAuthGuard)
+  createInvites(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: CreateTournamentInvitesDto,
+  ) {
+    return this.tournamentsService.createInvites(id, user.sub, dto);
+  }
+
+  @Delete(':id/invites/:inviteId')
+  @UseGuards(JwtAuthGuard)
+  revokeInvite(
+    @Param('id') id: string,
+    @Param('inviteId') inviteId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.tournamentsService.revokeInvite(id, inviteId, user.sub);
   }
 
   // --- Fechas ---
@@ -143,8 +210,12 @@ export class TournamentsController {
 
   @Get(':id/registrations')
   @UseGuards(OptionalJwtAuthGuard)
-  registrations(@Param('id') id: string, @CurrentUser() user?: { sub: string }) {
-    return this.tournamentsService.listRegistrations(id, user?.sub);
+  registrations(
+    @Param('id') id: string,
+    @CurrentUser() user?: { sub: string },
+    @Query('invite') inviteToken?: string,
+  ) {
+    return this.tournamentsService.listRegistrations(id, user?.sub, inviteToken);
   }
 
   @Get(':id/registrations/me')
@@ -159,8 +230,9 @@ export class TournamentsController {
     @Param('id') id: string,
     @CurrentUser() user: { sub: string },
     @Body() dto: CreateRegistrationDto,
+    @Query('invite') inviteToken?: string,
   ) {
-    const reg = await this.tournamentsService.register(id, user.sub, dto);
+    const reg = await this.tournamentsService.register(id, user.sub, dto, inviteToken);
     this.realtimeGateway.emitTournamentUpdated({ tournamentId: id, type: 'registration_added' });
     return reg;
   }
@@ -234,18 +306,42 @@ export class TournamentsController {
   // --- Partidos / Fixture ---
 
   @Get(':id/matches')
-  matches(@Param('id') id: string) {
-    return this.tournamentsService.listMatches(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  matches(
+    @Param('id') id: string,
+    @CurrentUser() user?: { sub: string },
+    @Query('invite') inviteToken?: string,
+  ) {
+    return this.tournamentsService.listMatches(id, {
+      userId: user?.sub,
+      inviteToken,
+    });
   }
 
   @Get(':id/fixture')
-  fixture(@Param('id') id: string) {
-    return this.tournamentsService.listMatches(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  fixture(
+    @Param('id') id: string,
+    @CurrentUser() user?: { sub: string },
+    @Query('invite') inviteToken?: string,
+  ) {
+    return this.tournamentsService.listMatches(id, {
+      userId: user?.sub,
+      inviteToken,
+    });
   }
 
   @Get(':id/standings')
-  standings(@Param('id') id: string) {
-    return this.tournamentsService.getStandings(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  standings(
+    @Param('id') id: string,
+    @CurrentUser() user?: { sub: string },
+    @Query('invite') inviteToken?: string,
+  ) {
+    return this.tournamentsService.getStandings(id, {
+      userId: user?.sub,
+      inviteToken,
+    });
   }
 
   @Post(':id/matches')

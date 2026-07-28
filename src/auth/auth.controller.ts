@@ -1,9 +1,10 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AuthService } from './auth.service';
 import {
   ChangePasswordDto,
+  FejubaLookupDto,
   ForgotPasswordDto,
   LoginDto,
   RegisterDto,
@@ -13,6 +14,11 @@ import {
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Get('fejuba-lookup')
+  fejubaLookup(@Query() query: FejubaLookupDto) {
+    return this.authService.lookupFejuba(query.dni);
+  }
 
   @Post('register')
   register(@Body() dto: RegisterDto) {

@@ -1,8 +1,13 @@
-import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
 export class CreateCourtSlotDto {
+  @IsOptional()
+  @IsUUID()
+  courtId?: string;
+
+  @IsOptional()
   @IsString()
-  courtLabel: string;
+  courtLabel?: string;
 
   @IsString()
   slotDate: string;

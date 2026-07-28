@@ -15,6 +15,7 @@ import {
   resolvePlayerRating,
   resolveVisibleLevelCategory,
 } from '../common/utils';
+import { FejubaService } from '../integrations/fejuba/fejuba.service';
 import { AuthRepository } from './auth.repository';
 import {
   ChangePasswordDto,
@@ -31,7 +32,16 @@ export class AuthService {
   constructor(
     private readonly authRepository: AuthRepository,
     private readonly jwtService: JwtService,
+    private readonly fejubaService: FejubaService,
   ) {}
+
+  async lookupFejuba(dni: string) {
+    const normalized = this.fejubaService.normalizeDni(dni);
+    if (!this.fejubaService.isValidDni(normalized)) {
+      throw new BadRequestException('El DNI debe tener 7 u 8 dígitos');
+    }
+    return this.fejubaService.lookupByDni(normalized);
+  }
 
   async register(dto: RegisterDto) {
     const role = dto.role || 'PLAYER';
@@ -41,29 +51,51 @@ export class AuthService {
       throw new ConflictException('El email ya está registrado');
     }
 
-    const nickname =
+    const dni =
+      role === 'PLAYER' ? this.fejubaService.normalizeDni(dto.dni ?? '') : null;
+    if (role === 'PLAYER') {
+      if (!dni || !this.fejubaService.isValidDni(dni)) {
+        throw new BadRequestException('El DNI es requerido (7 u 8 dígitos)');
+      }
+    }
+
+    let nickname =
       role === 'PLAYER' && dto.nickname ? dto.nickname.trim() : null;
     if (role === 'PLAYER') {
       if (!nickname) {
-        throw new BadRequestException('El nombre de usuario es requerido');
-      }
-      const existingNickname = await this.authRepository.findByNickname(nickname);
-      if (existingNickname) {
-        throw new ConflictException('Ese nombre de usuario ya está en uso');
+        nickname = await this.generateUniqueNickname(dto.email);
+      } else {
+        const existingNickname = await this.authRepository.findByNickname(nickname);
+        if (existingNickname) {
+          throw new ConflictException('Ese nombre de usuario ya está en uso');
+        }
       }
     }
+
+    const displayName =
+      dto.name?.trim() ||
+      (role === 'PLAYER'
+        ? this.fallbackNameFromEmail(dto.email)
+        : dto.email.split('@')[0] || 'Usuario');
 
     const user = await this.authRepository.createUser({
       email: dto.email,
       passwordHash: hashedPassword,
-      name: dto.name,
+      name: displayName,
       role,
     });
+
+    const isFederated = Boolean(dto.fejubaId || dto.fejubaCategory);
 
     await this.authRepository.createPlayerForUser(user.id, {
       declaredCategory: dto.declaredCategory ?? null,
       nickname,
       gender: dto.gender ?? null,
+      dni,
+      fejubaId: dto.fejubaId ?? null,
+      fejubaCategory: dto.fejubaCategory ?? dto.declaredCategory ?? null,
+      // Solo nivelan quienes no tienen categoría federada.
+      startInPlacement: role === 'PLAYER' && !isFederated,
     });
 
     const fullUser = await this.authRepository.findMe(user.id);
@@ -73,6 +105,33 @@ export class AuthService {
       access_token: token,
       user: this.serializeAuthUser(fullUser ?? user),
     };
+  }
+
+  private fallbackNameFromEmail(email: string): string {
+    const local = email.split('@')[0]?.replace(/[._+-]+/g, ' ').trim();
+    if (!local) return 'Jugador';
+    return local
+      .split(/\s+/)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(' ');
+  }
+
+  private async generateUniqueNickname(email: string): Promise<string> {
+    const base = email
+      .split('@')[0]
+      ?.toLowerCase()
+      .replace(/[^a-z0-9._]/g, '')
+      .slice(0, 12) || 'jugador';
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const suffix = attempt === 0 ? '' : String(randomInt(100, 9999));
+      const candidate = `${base}${suffix}`.slice(0, 20);
+      if (candidate.length < 3) continue;
+      const existing = await this.authRepository.findByNickname(candidate);
+      if (!existing) return candidate;
+    }
+
+    return `jug${Date.now().toString(36)}`.slice(0, 20);
   }
 
   async login(dto: LoginDto) {
@@ -211,6 +270,12 @@ export class AuthService {
       photo: user.photo_url ?? undefined,
       nickname: user.nickname ?? undefined,
       gender: typeof extras.gender === 'string' ? extras.gender : undefined,
+      birthDate: typeof extras.birthDate === 'string' ? extras.birthDate : undefined,
+      dni: typeof extras.dni === 'string' ? extras.dni : undefined,
+      fejubaId: typeof extras.fejubaId === 'string' ? extras.fejubaId : undefined,
+      fejubaCategory:
+        typeof extras.fejubaCategory === 'string' ? extras.fejubaCategory : undefined,
+      fejubaFound: Boolean(extras.fejubaId || extras.fejubaCategory),
       rating,
       skillScore: ratingToSkillScore(rating),
       levelCategory: resolveVisibleLevelCategory({

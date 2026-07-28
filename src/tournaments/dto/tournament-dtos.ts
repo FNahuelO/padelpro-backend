@@ -2,16 +2,21 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Min,
 } from 'class-validator';
 
 export class CreateTournamentDto {
   @IsString()
   name!: string;
+
+  @IsIn(['INTERNAL', 'EXTERNAL'])
+  modality!: 'INTERNAL' | 'EXTERNAL';
 
   @IsOptional()
   @IsString()
@@ -62,6 +67,12 @@ export class CreateTournamentDto {
   @IsOptional()
   @IsString()
   status?: string;
+}
+
+export class CreateTournamentInvitesDto {
+  @IsArray()
+  @IsUUID('4', { each: true })
+  userIds!: string[];
 }
 
 export class UpdateTournamentDto {
