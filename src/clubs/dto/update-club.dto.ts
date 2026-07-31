@@ -44,4 +44,17 @@ export class UpdateClubDto {
   @Min(-180)
   @Max(180)
   longitude?: number;
+
+  /** Tarifa base por hora de cancha (sugerida al publicar turnos). */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  courtPricePerHour?: number;
+
+  /** Porcentaje de seña sobre el precio (0–100). */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  depositPercent?: number;
 }

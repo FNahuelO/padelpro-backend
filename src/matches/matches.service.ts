@@ -7,6 +7,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { ClubPointsService } from '../clubs/club-points.service';
+import { ClubGapFillService } from '../clubs/club-gap-fill.service';
 import { CompetitiveScoringService } from '../competitive-scoring/competitive-scoring.service';
 import { BadgesService } from '../badges/badges.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -35,6 +36,7 @@ export class MatchesService {
     private readonly matchesRepository: MatchesRepository,
     private readonly realtimeGateway: RealtimeGateway,
     private readonly clubPointsService: ClubPointsService,
+    private readonly clubGapFillService: ClubGapFillService,
     private readonly competitiveScoringService: CompetitiveScoringService,
     private readonly badgesService: BadgesService,
     @Inject(forwardRef(() => PaymentsService))
@@ -610,6 +612,7 @@ export class MatchesService {
 
     if (match.court_slot_id) {
       await this.matchesRepository.releaseCourtSlot(match.court_slot_id);
+      void this.clubGapFillService.outreachForReleasedSlot(match.court_slot_id).catch(() => undefined);
     }
 
     const participantIds = await this.matchesRepository.listActiveParticipantUserIds(matchId);

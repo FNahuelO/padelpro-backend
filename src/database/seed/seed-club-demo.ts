@@ -302,9 +302,9 @@ async function main() {
 
     await pool.query(
       `INSERT INTO club_admins (club_id, user_id)
-       VALUES ($1, $2), ($3, $2)
+       VALUES ($1, $2)
        ON CONFLICT DO NOTHING`,
-      [PALERMO, CLUB_ADMIN_ID, NORTE],
+      [PALERMO, CLUB_ADMIN_ID],
     );
 
     await pool.query(

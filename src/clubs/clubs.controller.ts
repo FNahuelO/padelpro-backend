@@ -1,8 +1,26 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../common/guards/optional-jwt-auth.guard';
 import { TournamentsService } from '../tournaments/tournaments.service';
 import { ClubCommentsService } from './club-comments.service';
+import { ClubGapFillService } from './club-gap-fill.service';
+import { ClubManagerService } from './club-manager.service';
 import { ClubsService } from './clubs.service';
 import { CreateClubCommentDto } from './dto/create-club-comment.dto';
 import { CreateClubDto } from './dto/create-club.dto';
@@ -16,6 +34,7 @@ import { CreateShopCouponDto } from './dto/create-shop-coupon.dto';
 import { CreateShopProductDto } from './dto/create-shop-product.dto';
 import { GenerateCourtSlotsDto } from './dto/generate-court-slots.dto';
 import { UpdateShopProductDto } from './dto/update-shop-product.dto';
+import { UpdateAutoFillGapsDto } from './dto/update-auto-fill-gaps.dto';
 import { UpdateCourtDto } from './dto/update-court.dto';
 import { UpdateCourtScheduleDto } from './dto/update-court-schedule.dto';
 import { UpdateCourtSlotDto } from './dto/update-court-slot.dto';
@@ -27,12 +46,21 @@ export class ClubsController {
   constructor(
     private readonly clubsService: ClubsService,
     private readonly clubCommentsService: ClubCommentsService,
+    private readonly clubGapFillService: ClubGapFillService,
+    private readonly clubManagerService: ClubManagerService,
     private readonly tournamentsService: TournamentsService,
   ) {}
 
   @Get()
-  findAll() {
-    return this.clubsService.findAll();
+  @UseGuards(OptionalJwtAuthGuard)
+  findAll(@CurrentUser() user?: { sub?: string }) {
+    return this.clubsService.findAllForViewer(user?.sub);
+  }
+
+  @Get('mine')
+  @UseGuards(JwtAuthGuard)
+  findMine(@CurrentUser() user: { sub: string }) {
+    return this.clubsService.findMine(user.sub);
   }
 
   @Get('available')
@@ -79,10 +107,68 @@ export class ClubsController {
     return this.clubsService.update(user.sub, id, dto);
   }
 
+  @Post(':id/logo')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('logo', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype?.startsWith('image/')) {
+          cb(new BadRequestException('Solo se permiten imágenes'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadLogo(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Archivo requerido');
+    }
+    return this.clubsService.uploadLogo(user.sub, id, file);
+  }
+
   @Get(':id/dashboard')
   @UseGuards(JwtAuthGuard)
   getDashboard(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
     return this.clubsService.getDashboard(id, user.sub);
+  }
+
+  @Get(':id/manager-report')
+  @UseGuards(JwtAuthGuard)
+  getManagerReport(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Query('days') days?: string,
+  ) {
+    const periodDays = days != null ? parseInt(days, 10) : 30;
+    return this.clubManagerService.getManagerReport(
+      id,
+      user.sub,
+      Number.isFinite(periodDays) ? periodDays : 30,
+    );
+  }
+
+  @Get(':id/demand-insights')
+  @UseGuards(JwtAuthGuard)
+  async getDemandInsights(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
+    await this.clubsService.requireClubAdmin(id, user.sub);
+    return this.clubGapFillService.getDemandInsights(id);
+  }
+
+  @Patch(':id/auto-fill-gaps')
+  @UseGuards(JwtAuthGuard)
+  setAutoFillGaps(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: UpdateAutoFillGapsDto,
+  ) {
+    return this.clubsService.setAutoFillGaps(id, user.sub, dto.enabled);
   }
 
   @Get(':id/impact')
@@ -296,6 +382,16 @@ export class ClubsController {
   @UseGuards(JwtAuthGuard)
   listShopSales(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
     return this.clubsService.listShopSales(id, user.sub);
+  }
+
+  @Get(':id/shop/stats')
+  @UseGuards(JwtAuthGuard)
+  getShopStats(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Query('days') days?: string,
+  ) {
+    return this.clubsService.getShopStats(id, user.sub, days ? Number(days) : 30);
   }
 
   @Get(':id/shop/coupons')

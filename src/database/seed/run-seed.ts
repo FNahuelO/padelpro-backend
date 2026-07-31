@@ -211,16 +211,15 @@ async function main() {
     console.log(`✅ ${USERS.length} usuarios + perfiles player`);
 
     const clubAdminId = USERS.find((u) => u.role === 'CLUB_ADMIN')?.id;
-    if (clubAdminId) {
-      for (const club of CLUBS) {
-        await pool.query(
-          `INSERT INTO club_admins (club_id, user_id)
-           VALUES ($1, $2)
-           ON CONFLICT DO NOTHING`,
-          [club.id, clubAdminId],
-        );
-      }
-      console.log(`✅ club_admins vinculados a ${CLUBS.length} clubes`);
+    if (clubAdminId && CLUBS[0]) {
+      // Una sola sede por admin de demo: no asociar a todos los clubs
+      await pool.query(
+        `INSERT INTO club_admins (club_id, user_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [CLUBS[0].id, clubAdminId],
+      );
+      console.log(`✅ club_admins: ${clubAdminId} → ${CLUBS[0].name}`);
     }
 
     console.log(`   Contraseña demo: ${DEMO_PASSWORD}`);

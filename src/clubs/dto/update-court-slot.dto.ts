@@ -28,4 +28,10 @@ export class UpdateCourtSlotDto {
   @IsOptional()
   @IsBoolean()
   isDeadHour?: boolean;
+
+  /** Precio por hora del turno (declarado por el club). */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  pricePerHour?: number;
 }

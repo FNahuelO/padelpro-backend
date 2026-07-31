@@ -35,4 +35,10 @@ export class CreateCourtSlotDto {
   @IsInt()
   @Min(0)
   bonusPoints?: number;
+
+  /** Precio por hora del turno (declarado por el club). Si se omite, usa court_price_per_hour del club. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  pricePerHour?: number;
 }
