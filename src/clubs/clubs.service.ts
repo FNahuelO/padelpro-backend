@@ -1,9 +1,17 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  forwardRef,
+} from '@nestjs/common';
 import { isClubRole } from '../common/roles';
 import { getMonthKey } from '../common/utils';
 import { COURT_SLOT_END_AT_SQL } from '../common/utils/court-schedule.util';
 import { deleteCloudinaryAsset, uploadImageBuffer } from '../common/cloudinary/cloudinary.util';
 import { DatabaseService } from '../database/database.service';
+import { PaymentsService } from '../payments/payments.service';
 import { CreateClubDto } from './dto/create-club.dto';
 import { CreateClubPromotionDto } from './dto/create-club-promotion.dto';
 import { CreateClubRewardDto } from './dto/create-club-reward.dto';
@@ -34,7 +42,11 @@ function assertClubId(id: string): void {
 
 @Injectable()
 export class ClubsService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @Inject(forwardRef(() => PaymentsService))
+    private readonly paymentsService: PaymentsService,
+  ) {}
 
   async findAll() {
     const result = await this.db.query(
@@ -1520,7 +1532,7 @@ export class ClubsService {
       extraFilter = 'AND available_as_match_extra = TRUE';
     }
     const result = await this.db.query(
-      `SELECT id, name, description, price, kind, category, stock_quantity, available_as_match_extra
+      `SELECT id, name, description, price, kind, category, stock_quantity, available_as_match_extra, photo_url
        FROM club_shop_products
        WHERE club_id = $1 AND active = TRUE ${extraFilter}
        ORDER BY name ASC`,
@@ -1533,7 +1545,7 @@ export class ClubsService {
     await this.assertClubRole(userId, clubId);
     await this.findOne(clubId);
     const result = await this.db.query(
-      `SELECT id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active, created_at
+      `SELECT id, name, description, price, kind, category, stock_quantity, available_as_match_extra, photo_url, active, created_at
        FROM club_shop_products
        WHERE club_id = $1
        ORDER BY active DESC, name ASC`,
@@ -1552,7 +1564,7 @@ export class ClubsService {
       `INSERT INTO club_shop_products
          (club_id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active)
        VALUES ($1, $2, $3, $4, 'GENERAL', $5, $6, $7, TRUE)
-       RETURNING id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active, created_at`,
+       RETURNING id, name, description, price, kind, category, stock_quantity, available_as_match_extra, photo_url, active, created_at`,
       [
         clubId,
         dto.name.trim(),
@@ -1591,7 +1603,7 @@ export class ClubsService {
            available_as_match_extra = COALESCE($10, available_as_match_extra),
            updated_at = NOW()
        WHERE id = $1 AND club_id = $2
-       RETURNING id, name, description, price, kind, category, stock_quantity, available_as_match_extra, active, created_at`,
+       RETURNING id, name, description, price, kind, category, stock_quantity, available_as_match_extra, photo_url, active, created_at`,
       [
         productId,
         clubId,
@@ -1610,6 +1622,128 @@ export class ClubsService {
       throw new NotFoundException('Producto no encontrado');
     }
     return result.rows[0];
+  }
+
+  async uploadShopProductPhoto(
+    clubId: string,
+    userId: string,
+    productId: string,
+    file: Express.Multer.File,
+  ) {
+    await this.assertClubRole(userId, clubId);
+    assertClubId(clubId);
+
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    if (!allowed.includes(file.mimetype)) {
+      throw new BadRequestException('Formato de imagen no soportado. Usá JPG, PNG o WEBP.');
+    }
+
+    const current = await this.db.query(
+      `SELECT id, photo_url FROM club_shop_products WHERE id = $1 AND club_id = $2`,
+      [productId, clubId],
+    );
+    const product = current.rows[0];
+    if (!product) {
+      throw new NotFoundException('Producto no encontrado');
+    }
+
+    const previousPhotoUrl = product.photo_url as string | undefined;
+    const upload = await uploadImageBuffer(file, `playtomic-clone/clubs/${clubId}/shop`);
+
+    const result = await this.db.query(
+      `UPDATE club_shop_products
+       SET photo_url = $3, updated_at = NOW()
+       WHERE id = $1 AND club_id = $2
+       RETURNING id, name, description, price, kind, category, stock_quantity,
+                 available_as_match_extra, photo_url, active, created_at`,
+      [productId, clubId, upload.secure_url],
+    );
+
+    if (previousPhotoUrl && previousPhotoUrl !== upload.secure_url) {
+      await deleteCloudinaryAsset(previousPhotoUrl);
+    }
+
+    return result.rows[0];
+  }
+
+  async confirmShopPurchase(clubId: string, userId: string, purchaseId: string) {
+    await this.assertClubRole(userId, clubId);
+    assertClubId(clubId);
+
+    const existing = await this.db.query<{ id: string; status: string; club_id: string }>(
+      `SELECT id, status, club_id FROM shop_purchases WHERE id = $1`,
+      [purchaseId],
+    );
+    const purchase = existing.rows[0];
+    if (!purchase || purchase.club_id !== clubId) {
+      throw new NotFoundException('Compra no encontrada en este club');
+    }
+    if (purchase.status === 'CONFIRMED') {
+      return { ok: true, status: 'CONFIRMED' as const };
+    }
+    if (purchase.status !== 'PENDING') {
+      throw new BadRequestException(
+        `La compra no se puede confirmar (estado actual: ${purchase.status})`,
+      );
+    }
+
+    const updated = await this.db.query(
+      `UPDATE shop_purchases
+       SET status = 'CONFIRMED', updated_at = NOW()
+       WHERE id = $1 AND club_id = $2 AND status = 'PENDING'
+       RETURNING id, status, club_id, quantity, subtotal, created_at, updated_at`,
+      [purchaseId, clubId],
+    );
+    if (!updated.rows[0]) {
+      throw new BadRequestException('No se pudo confirmar la compra');
+    }
+    return { ok: true, status: 'CONFIRMED' as const, purchase: updated.rows[0] };
+  }
+
+  async markDepositPaid(clubId: string, userId: string, depositId: string) {
+    await this.assertClubRole(userId, clubId);
+    assertClubId(clubId);
+
+    const row = await this.db.query<{
+      id: string;
+      status: string;
+      club_id: string | null;
+    }>(
+      `SELECT md.id, md.status, m.club_id
+       FROM match_deposits md
+       INNER JOIN matches m ON m.id = md.match_id
+       WHERE md.id = $1`,
+      [depositId],
+    );
+    const deposit = row.rows[0];
+    if (!deposit || deposit.club_id !== clubId) {
+      throw new NotFoundException('Seña no encontrada en este club');
+    }
+    if (deposit.status === 'APPROVED') {
+      return { ok: true, alreadyPaid: true };
+    }
+    if (deposit.status !== 'PENDING') {
+      throw new BadRequestException(
+        `La seña no se puede marcar como pagada (estado actual: ${deposit.status})`,
+      );
+    }
+
+    const approved = await this.paymentsService.approveDeposit(depositId, 'manual-reception');
+    if (!approved) {
+      throw new BadRequestException('No se pudo aprobar la seña');
+    }
+
+    await this.db.query(
+      `UPDATE match_deposits
+       SET provider = 'MANUAL'::payment_provider, updated_at = NOW()
+       WHERE id = $1`,
+      [depositId],
+    );
+
+    const refreshed = await this.db.query(`SELECT * FROM match_deposits WHERE id = $1`, [
+      depositId,
+    ]);
+    return { ok: true, alreadyPaid: false, deposit: refreshed.rows[0] };
   }
 
   async updateShopProductStock(

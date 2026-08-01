@@ -378,6 +378,53 @@ export class ClubsController {
     return this.clubsService.deactivateShopProduct(id, user.sub, productId);
   }
 
+  @Post(':id/shop/products/:productId/photo')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype?.startsWith('image/')) {
+          cb(new BadRequestException('Solo se permiten imágenes'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadShopProductPhoto(
+    @Param('id') id: string,
+    @Param('productId') productId: string,
+    @CurrentUser() user: { sub: string },
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Archivo requerido');
+    }
+    return this.clubsService.uploadShopProductPhoto(id, user.sub, productId, file);
+  }
+
+  @Post(':id/shop/purchases/:purchaseId/confirm')
+  @UseGuards(JwtAuthGuard)
+  confirmShopPurchase(
+    @Param('id') id: string,
+    @Param('purchaseId') purchaseId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.clubsService.confirmShopPurchase(id, user.sub, purchaseId);
+  }
+
+  @Post(':id/deposits/:depositId/mark-paid')
+  @UseGuards(JwtAuthGuard)
+  markDepositPaid(
+    @Param('id') id: string,
+    @Param('depositId') depositId: string,
+    @CurrentUser() user: { sub: string },
+  ) {
+    return this.clubsService.markDepositPaid(id, user.sub, depositId);
+  }
+
   @Get(':id/shop/sales')
   @UseGuards(JwtAuthGuard)
   listShopSales(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
