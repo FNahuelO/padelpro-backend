@@ -14,7 +14,7 @@ import { MatchResultExpiryService } from './match-result-expiry.service';
   imports: [
     ScheduleModule,
     RealtimeModule,
-    ClubsModule,
+    forwardRef(() => ClubsModule),
     CompetitiveScoringModule,
     BadgesModule,
     forwardRef(() => PaymentsModule),

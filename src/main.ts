@@ -3,28 +3,36 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
-import express from 'express';
+import express, { Express } from 'express';
 
 const server = express();
 
-export const createNestServer = async (): Promise<any> => {
-  const app = await NestFactory.create(AppModule, new ExpressAdapter(server));
+/** Promise cacheada: en Vercel no recrear Nest en cada request. */
+let nestReady: Promise<Express> | null = null;
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
+export const createNestServer = async (): Promise<Express> => {
+  if (!nestReady) {
+    nestReady = (async () => {
+      const app = await NestFactory.create(AppModule, new ExpressAdapter(server));
 
-  app.enableCors({
-    origin: '*',
-    credentials: true,
-  });
+      app.useGlobalPipes(
+        new ValidationPipe({
+          whitelist: true,
+          forbidNonWhitelisted: true,
+          transform: true,
+        }),
+      );
 
-  await app.init();
-  return server;
+      app.enableCors({
+        origin: '*',
+        credentials: true,
+      });
+
+      await app.init();
+      return server;
+    })();
+  }
+  return nestReady;
 };
 
 // Modo serverless (Vercel)

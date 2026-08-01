@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PaymentsModule } from '../payments/payments.module';
 import { TournamentsModule } from '../tournaments/tournaments.module';
 import { OptionalJwtAuthGuard } from '../common/guards/optional-jwt-auth.guard';
 import { ClubGapFillCron } from './club-gap-fill.cron';
@@ -11,7 +12,7 @@ import { ClubPointsService } from './club-points.service';
 import { ClubsService } from './clubs.service';
 
 @Module({
-  imports: [TournamentsModule, NotificationsModule],
+  imports: [TournamentsModule, NotificationsModule, forwardRef(() => PaymentsModule)],
   controllers: [ClubsController],
   providers: [
     ClubsService,

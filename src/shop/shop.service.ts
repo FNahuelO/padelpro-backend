@@ -26,7 +26,7 @@ export class ShopService {
     }
 
     const result = await this.db.query(
-      `SELECT id, club_id, name, description, price, kind, category, active, sort_order, created_at
+      `SELECT id, club_id, name, description, price, kind, category, photo_url, active, sort_order, created_at
        FROM club_shop_products
        WHERE club_id = $1 AND active = TRUE${kindFilter}
        ORDER BY sort_order ASC, name ASC`,
@@ -40,7 +40,7 @@ export class ShopService {
     await this.assertClubExists(clubId);
 
     const result = await this.db.query(
-      `SELECT id, club_id, name, description, price, kind, category, active, sort_order, created_at, updated_at
+      `SELECT id, club_id, name, description, price, kind, category, photo_url, active, sort_order, created_at, updated_at
        FROM club_shop_products
        WHERE club_id = $1
        ORDER BY sort_order ASC, name ASC`,

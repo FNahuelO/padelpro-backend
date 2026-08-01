@@ -1,13 +1,21 @@
 import { Controller, Get } from '@nestjs/common';
 
-@Controller('health')
+@Controller()
 export class HealthController {
   @Get()
-  check() {
+  root() {
+    return this.payload();
+  }
+
+  @Get('health')
+  health() {
+    return this.payload();
+  }
+
+  private payload() {
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
     };
   }
 }
-
