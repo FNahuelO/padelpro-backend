@@ -50,7 +50,7 @@ export class ClubsService {
 
   async findAll() {
     const result = await this.db.query(
-      `SELECT id, name, city, zone, address, phone, logo_url, latitude, longitude,
+      `SELECT id, name, city, zone, address, phone, logo_url, cover_url, latitude, longitude,
               subscription_plan, created_at
        FROM clubs
        ORDER BY name ASC`,
@@ -90,7 +90,7 @@ export class ClubsService {
     }
 
     const result = await this.db.query(
-      `SELECT c.id, c.name, c.city, c.zone, c.address, c.phone, c.logo_url,
+      `SELECT c.id, c.name, c.city, c.zone, c.address, c.phone, c.logo_url, c.cover_url,
               c.latitude, c.longitude, c.subscription_plan, c.created_at
        FROM clubs c
        INNER JOIN club_admins ca ON ca.club_id = c.id
@@ -188,7 +188,7 @@ export class ClubsService {
   async findOne(id: string) {
     assertClubId(id);
     const result = await this.db.query(
-      `SELECT id, name, city, zone, address, phone, logo_url, latitude, longitude,
+      `SELECT id, name, city, zone, address, phone, logo_url, cover_url, latitude, longitude,
               subscription_plan, auto_fill_gaps_enabled, court_price_per_hour, deposit_percent,
               created_at, updated_at
        FROM clubs
@@ -331,6 +331,40 @@ export class ClubsService {
 
     if (previousLogoUrl && previousLogoUrl !== upload.secure_url) {
       await deleteCloudinaryAsset(previousLogoUrl);
+    }
+
+    return result.rows[0];
+  }
+
+  async uploadCover(userId: string, clubId: string, file: Express.Multer.File) {
+    await this.assertClubRole(userId, clubId);
+    assertClubId(clubId);
+
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    if (!allowed.includes(file.mimetype)) {
+      throw new BadRequestException('Formato de imagen no soportado. Usá JPG, PNG o WEBP.');
+    }
+
+    const current = await this.db.query(`SELECT cover_url FROM clubs WHERE id = $1`, [clubId]);
+    const club = current.rows[0];
+    if (!club) {
+      throw new NotFoundException('Club no encontrado');
+    }
+
+    const previousCoverUrl = club.cover_url as string | undefined;
+    const upload = await uploadImageBuffer(file, `playtomic-clone/clubs/${clubId}/cover`);
+
+    const result = await this.db.query(
+      `UPDATE clubs
+       SET cover_url = $2, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, city, zone, address, phone, logo_url, cover_url, latitude, longitude,
+                 subscription_plan, created_at, updated_at`,
+      [clubId, upload.secure_url],
+    );
+
+    if (previousCoverUrl && previousCoverUrl !== upload.secure_url) {
+      await deleteCloudinaryAsset(previousCoverUrl);
     }
 
     return result.rows[0];

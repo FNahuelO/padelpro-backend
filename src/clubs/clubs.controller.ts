@@ -133,6 +133,32 @@ export class ClubsController {
     return this.clubsService.uploadLogo(user.sub, id, file);
   }
 
+  @Post(':id/cover')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('cover', {
+      storage: memoryStorage(),
+      limits: { fileSize: 5 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype?.startsWith('image/')) {
+          cb(new BadRequestException('Solo se permiten imágenes'), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadCover(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Archivo requerido');
+    }
+    return this.clubsService.uploadCover(user.sub, id, file);
+  }
+
   @Get(':id/dashboard')
   @UseGuards(JwtAuthGuard)
   getDashboard(@Param('id') id: string, @CurrentUser() user: { sub: string }) {
