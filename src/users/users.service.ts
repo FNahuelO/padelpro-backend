@@ -162,8 +162,9 @@ export class UsersService {
         matchesPlayed: competitiveRow?.matches_played ?? 0,
       },
       preferences: {
-        preferredHand: (prefs.preferredHand as string) || mapPosition(row.position),
-        courtPosition: (prefs.courtPosition as string) || undefined,
+        preferredHand: (prefs.preferredHand as string) || undefined,
+        courtPosition:
+          (prefs.courtPosition as string) || mapPosition(row.position) || undefined,
         matchType: (prefs.matchType as string) || undefined,
         preferredPlayTime: (prefs.preferredPlayTime as string) || undefined,
         availabilityWindows: Array.isArray(prefs.availabilityWindows)
@@ -447,11 +448,16 @@ export class UsersService {
     const bio = dto.description !== undefined ? dto.description : prow.bio;
     const city = dto.location !== undefined ? dto.location : prow.city;
     const hasCoords = dto.latitude != null && dto.longitude != null;
+    const zoneHint =
+      dto.location !== undefined && typeof dto.location === 'string' && dto.location.trim()
+        ? dto.location.split(',')[0]?.trim() || null
+        : null;
 
     await this.db.query(
       `UPDATE players
        SET bio = $2,
            city = $3,
+           zone = CASE WHEN $8::text IS NOT NULL THEN $8 ELSE zone END,
            extras = $4::jsonb,
            latitude = CASE WHEN $5 THEN $6 ELSE latitude END,
            longitude = CASE WHEN $5 THEN $7 ELSE longitude END,
@@ -466,6 +472,7 @@ export class UsersService {
         hasCoords,
         hasCoords ? dto.latitude : null,
         hasCoords ? dto.longitude : null,
+        zoneHint,
       ],
     );
 
@@ -487,14 +494,25 @@ export class UsersService {
     const preferences: Extras = { ...(extras.preferences as Extras), ...dto };
     extras.preferences = preferences;
 
-    await this.db.query(`UPDATE players SET extras = $2::jsonb, updated_at = NOW() WHERE id = $1`, [
-      row.id,
-      JSON.stringify(extras),
-    ]);
+    const positionEnum = normalizeCourtPosition(
+      dto.courtPosition ?? (preferences.courtPosition as string | null | undefined),
+    );
+
+    await this.db.query(
+      `UPDATE players
+       SET extras = $2::jsonb,
+           position = COALESCE($3::player_position, position),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [row.id, JSON.stringify(extras), positionEnum],
+    );
 
     return {
       preferredHand: dto.preferredHand ?? (preferences.preferredHand as string) ?? null,
-      courtPosition: dto.courtPosition ?? (preferences.courtPosition as string) ?? null,
+      courtPosition:
+        dto.courtPosition ??
+        (preferences.courtPosition as string) ??
+        (positionEnum ? mapPosition(positionEnum) : null),
       matchType: dto.matchType ?? (preferences.matchType as string) ?? null,
       preferredPlayTime: dto.preferredPlayTime ?? (preferences.preferredPlayTime as string) ?? null,
       availabilityWindows:
@@ -544,4 +562,15 @@ function mapPosition(
     ambos: 'Ambos',
   };
   return m[pos] ?? pos;
+}
+
+function normalizeCourtPosition(
+  value?: string | null,
+): 'drive' | 'reves' | 'ambos' | null {
+  if (!value) return null;
+  const v = value.trim().toLowerCase();
+  if (v === 'drive') return 'drive';
+  if (v === 'reves' || v === 'revés') return 'reves';
+  if (v === 'ambos' || v === 'both') return 'ambos';
+  return null;
 }

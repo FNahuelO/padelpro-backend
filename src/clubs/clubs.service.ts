@@ -1757,13 +1757,137 @@ export class ClubsService {
       `UPDATE club_shop_products
        SET stock_quantity = $3
        WHERE id = $1 AND club_id = $2
-       RETURNING id, name, stock_quantity, active`,
+       RETURNING id, name, stock_quantity, active, photo_url`,
       [productId, clubId, dto.stockQuantity],
     );
     if (!result.rows[0]) {
       throw new NotFoundException('Producto no encontrado');
     }
     return result.rows[0];
+  }
+
+  async uploadShopProductPhoto(
+    clubId: string,
+    userId: string,
+    productId: string,
+    file: Express.Multer.File,
+  ) {
+    await this.assertClubRole(userId, clubId);
+    assertClubId(clubId);
+
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    if (!allowed.includes(file.mimetype)) {
+      throw new BadRequestException('Formato de imagen no soportado. Usá JPG, PNG o WEBP.');
+    }
+
+    const current = await this.db.query(
+      `SELECT id, photo_url FROM club_shop_products WHERE id = $1 AND club_id = $2`,
+      [productId, clubId],
+    );
+    const product = current.rows[0];
+    if (!product) {
+      throw new NotFoundException('Producto no encontrado');
+    }
+
+    const previousPhotoUrl = product.photo_url as string | undefined;
+    const upload = await uploadImageBuffer(
+      file,
+      `playtomic-clone/clubs/${clubId}/shop`,
+    );
+
+    const result = await this.db.query(
+      `UPDATE club_shop_products
+       SET photo_url = $3, updated_at = NOW()
+       WHERE id = $1 AND club_id = $2
+       RETURNING id, name, description, price, kind, category, stock_quantity,
+                 available_as_match_extra, active, photo_url, created_at`,
+      [productId, clubId, upload.secure_url],
+    );
+
+    if (previousPhotoUrl && previousPhotoUrl !== upload.secure_url) {
+      await deleteCloudinaryAsset(previousPhotoUrl);
+    }
+
+    return result.rows[0];
+  }
+
+  async confirmShopPurchase(clubId: string, userId: string, purchaseId: string) {
+    await this.assertClubRole(userId, clubId);
+    assertClubId(clubId);
+
+    const existing = await this.db.query(
+      `SELECT id, status, club_id FROM shop_purchases WHERE id = $1`,
+      [purchaseId],
+    );
+    const purchase = existing.rows[0];
+    if (!purchase || purchase.club_id !== clubId) {
+      throw new NotFoundException('Compra no encontrada en este club');
+    }
+
+    if (purchase.status === 'CONFIRMED') {
+      return { ok: true, alreadyConfirmed: true, id: purchase.id, status: 'CONFIRMED' };
+    }
+
+    if (purchase.status !== 'PENDING') {
+      throw new BadRequestException(
+        `No se puede confirmar una compra en estado ${purchase.status}`,
+      );
+    }
+
+    const result = await this.db.query(
+      `UPDATE shop_purchases
+       SET status = 'CONFIRMED', updated_at = NOW()
+       WHERE id = $1 AND club_id = $2 AND status = 'PENDING'
+       RETURNING id, club_id, user_id, match_id, product_id, quantity, unit_price, subtotal, status, created_at, updated_at`,
+      [purchaseId, clubId],
+    );
+
+    if (!result.rows[0]) {
+      throw new BadRequestException('No se pudo confirmar la compra');
+    }
+
+    return { ok: true, purchase: result.rows[0] };
+  }
+
+  async markDepositPaid(clubId: string, userId: string, depositId: string) {
+    await this.assertClubRole(userId, clubId);
+    assertClubId(clubId);
+
+    const existing = await this.db.query(
+      `SELECT md.id, md.status, md.provider, m.club_id
+       FROM match_deposits md
+       INNER JOIN matches m ON m.id = md.match_id
+       WHERE md.id = $1`,
+      [depositId],
+    );
+    const row = existing.rows[0];
+    if (!row || row.club_id !== clubId) {
+      throw new NotFoundException('Seña no encontrada en este club');
+    }
+
+    if (row.status === 'APPROVED') {
+      return { ok: true, alreadyPaid: true, id: row.id, status: 'APPROVED' };
+    }
+
+    if (row.status !== 'PENDING') {
+      throw new BadRequestException(
+        `No se puede marcar como pagada una seña en estado ${row.status}`,
+      );
+    }
+
+    await this.db.query(
+      `UPDATE match_deposits
+       SET provider = 'MANUAL'::payment_provider, updated_at = NOW()
+       WHERE id = $1 AND status = 'PENDING'`,
+      [depositId],
+    );
+
+    const deposit = await this.paymentsService.approveDeposit(depositId, 'manual-reception');
+    if (!deposit) {
+      throw new BadRequestException('No se pudo aprobar la seña');
+    }
+
+    return { ok: true, alreadyPaid: false, deposit };
   }
 
   async deactivateShopProduct(clubId: string, userId: string, productId: string) {

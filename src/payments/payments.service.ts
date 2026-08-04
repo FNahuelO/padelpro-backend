@@ -106,13 +106,41 @@ export class PaymentsService {
   async getDepositStatusForUser(matchId: string, userId: string) {
     const match = await this.getMatchOrThrow(matchId);
     const playerId = await this.matchesRepo.getPlayerIdByUserId(userId);
+    const { amount, required, currency } = await this.resolveDepositAmount(match);
+    const allDeposits = await this.paymentsRepo.listDepositsForMatch(matchId);
+
+    // Cuentas de club (sin perfil jugador) igual ven el estado de señas del partido
     if (!playerId) {
-      throw new BadRequestException('Completá tu perfil de jugador');
+      let clubName: string | undefined;
+      if (match.club_id) {
+        const club = await this.paymentsRepo.getClubPricing(match.club_id);
+        clubName = club?.name;
+      }
+      return {
+        matchId,
+        required,
+        amount,
+        currency,
+        clubName,
+        provider: this.isMockMode() ? 'MOCK' : 'MERCADOPAGO',
+        paid: false,
+        depositStatus: null,
+        checkoutUrl: null,
+        coveredGuestSlots: 0,
+        coveredGuests: [],
+        players: allDeposits.map((d: any) => ({
+          id: d.id,
+          userId: d.user_id,
+          userName: d.user_name,
+          amount: Number(d.amount),
+          status: d.status,
+          paidAt: d.paid_at,
+          coveredGuestSlots: Number(d.covered_guest_slots ?? 0),
+        })),
+      };
     }
 
-    const { amount, required, currency } = await this.resolveDepositAmount(match);
     const deposit = await this.paymentsRepo.getDepositByMatchPlayer(matchId, playerId);
-    const allDeposits = await this.paymentsRepo.listDepositsForMatch(matchId);
     const coveredGuests = (await this.matchesRepo.listGuestInvites(matchId))
       .filter((guest: any) => guest.sponsor_user_id === userId)
       .map((guest: any) => ({
@@ -145,6 +173,7 @@ export class PaymentsService {
       coveredGuestSlots,
       coveredGuests,
       players: allDeposits.map((d: any) => ({
+        id: d.id,
         userId: d.user_id,
         userName: d.user_name,
         amount: Number(d.amount),

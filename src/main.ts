@@ -35,7 +35,7 @@ export const createNestServer = async (): Promise<Express> => {
   return nestReady;
 };
 
-// Modo serverless (Vercel)
+// Modo serverless (Vercel) — reutiliza la misma instancia Nest entre requests
 export default async (req: any, res: any) => {
   const app = await createNestServer();
   app(req, res);

@@ -12,8 +12,8 @@ import { CompetitiveScoringService } from '../competitive-scoring/competitive-sc
 import { BadgesService } from '../badges/badges.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { isClubRole } from '../common/roles';
-import { defaultLevelBand, getCategoryLevelRange } from '../common/utils/level-range.util';
-import { resolveVisibleLevelCategory, resolvePlayerRating, PLACEMENT_ELO_K_FACTOR, PLACEMENT_MATCHES_REQUIRED, resolveMatchGenderFromPartner, type MatchGender } from '../common/utils';
+import { defaultLevelBand, getCategoryLevelRange, getFemaleMixedLevelRange } from '../common/utils/level-range.util';
+import { resolveVisibleLevelCategory, resolvePlayerRating, PLACEMENT_ELO_K_FACTOR, PLACEMENT_MATCHES_REQUIRED, resolveMatchGenderFromPartner, normalizeBinaryGender, type MatchGender } from '../common/utils';
 import { CreateMatchDto, type CourtBookingMode } from './dto/create-match.dto';
 import { ListOpenMatchesQueryDto } from './dto/list-open-matches.query.dto';
 import { MatchInviteDto } from './dto/match-invite.dto';
@@ -77,10 +77,8 @@ export class MatchesService {
     userId: string,
     invites: MatchInviteDto[] | undefined,
     requested: MatchGender = 'open',
-    mode?: string,
+    _mode?: string,
   ): Promise<MatchGender> {
-    if (mode !== 'competitive') return 'open';
-
     const partnerInvite = invites?.find((invite) => invite.role === 'partner' && invite.userId);
     if (!partnerInvite?.userId) return requested;
 
@@ -101,10 +99,23 @@ export class MatchesService {
   }
 
   async create(userId: string, dto: CreateMatchDto) {
+    dto.gender = await this.resolveGenderForInvites(
+      userId,
+      dto.invites,
+      dto.gender ?? 'open',
+      dto.mode,
+    );
+
     if (dto.levelMin == null || dto.levelMax == null) {
       const placement = await this.matchesRepository.getPlayerPlacementBandByUserId(userId);
+      const creatorGender = await this.matchesRepository.getGenderByUserId(userId);
+      const isFemaleMixed =
+        dto.gender === 'mixed' && normalizeBinaryGender(creatorGender) === 'female';
+
       if (placement?.categoryStatus === 'provisional' && placement.declaredCategory) {
-        const band = getCategoryLevelRange(placement.declaredCategory);
+        const band = isFemaleMixed
+          ? getFemaleMixedLevelRange(placement.declaredCategory)
+          : getCategoryLevelRange(placement.declaredCategory);
         dto.levelMin = dto.levelMin ?? band.min;
         dto.levelMax = dto.levelMax ?? band.max;
       } else {
@@ -125,13 +136,6 @@ export class MatchesService {
     if (dto.courtSlotId && !dto.clubId) {
       throw new BadRequestException('El turno de cancha requiere un club');
     }
-
-    dto.gender = await this.resolveGenderForInvites(
-      userId,
-      dto.invites,
-      dto.gender ?? 'open',
-      dto.mode,
-    );
 
     const result = await this.matchesRepository.create(userId, dto);
     const match = result.rows[0];
