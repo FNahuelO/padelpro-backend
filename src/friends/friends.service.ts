@@ -119,7 +119,18 @@ export class FriendsService {
     if (!result.rows[0]) {
       throw new NotFoundException('Solicitud no encontrada o ya procesada');
     }
-    return result.rows[0];
+    const row = result.rows[0];
+    try {
+      await this.db.query(
+        `INSERT INTO user_follows (follower_id, following_id)
+         VALUES ($1, $2), ($2, $1)
+         ON CONFLICT DO NOTHING`,
+        [row.requester_id, row.addressee_id],
+      );
+    } catch {
+      // Tabla user_follows puede no existir aún si la migración no corrió.
+    }
+    return row;
   }
 
   async rejectRequest(userId: string, requestId: string) {
