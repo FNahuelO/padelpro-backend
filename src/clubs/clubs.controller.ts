@@ -35,6 +35,7 @@ import { CreateShopProductDto } from './dto/create-shop-product.dto';
 import { GenerateCourtSlotsDto } from './dto/generate-court-slots.dto';
 import { UpdateShopProductDto } from './dto/update-shop-product.dto';
 import { UpdateAutoFillGapsDto } from './dto/update-auto-fill-gaps.dto';
+import { NotifyClubSegmentDto } from './dto/notify-club-segment.dto';
 import { UpdateCourtDto } from './dto/update-court.dto';
 import { UpdateCourtScheduleDto } from './dto/update-court-schedule.dto';
 import { UpdateCourtSlotDto } from './dto/update-court-slot.dto';
@@ -194,7 +195,22 @@ export class ClubsController {
     @CurrentUser() user: { sub: string },
     @Body() dto: UpdateAutoFillGapsDto,
   ) {
-    return this.clubsService.setAutoFillGaps(id, user.sub, dto.enabled);
+    return this.clubsService.setAutoFillGaps(id, user.sub, {
+      enabled: dto.enabled,
+      hoursBefore: dto.hoursBefore,
+      autoCreateMatch: dto.autoCreateMatch,
+      notifyEnabled: dto.notifyEnabled,
+    });
+  }
+
+  @Post(':id/segments/notify')
+  @UseGuards(JwtAuthGuard)
+  notifySegment(
+    @Param('id') id: string,
+    @CurrentUser() user: { sub: string },
+    @Body() dto: NotifyClubSegmentDto,
+  ) {
+    return this.clubManagerService.notifySegment(id, user.sub, dto);
   }
 
   @Get(':id/impact')

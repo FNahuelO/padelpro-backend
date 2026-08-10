@@ -5,7 +5,6 @@ import { NotificationsService } from '../notifications/notifications.service';
 const HISTORY_DAYS = 60;
 const OCCUPANCY_THRESHOLD = 0.4;
 const MIN_HISTORICAL_SLOTS = 5;
-const LOOKAHEAD_HOURS = 72;
 const MIN_PLAYER_MATCHES = 2;
 const MAX_CANDIDATES_PER_SLOT = 30;
 const MAX_NOTIFS_PER_USER_CLUB_DAY = 3;
@@ -34,6 +33,10 @@ type ClubRow = {
   id: string;
   name: string;
   auto_fill_gaps_enabled: boolean;
+  gap_fill_hours_before: number;
+  gap_fill_auto_create_match: boolean;
+  gap_fill_notify_enabled: boolean;
+  zone?: string | null;
 };
 
 @Injectable()
@@ -45,17 +48,28 @@ export class ClubGapFillService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  async runForEnabledClubs(): Promise<{ clubs: number; notified: number }> {
+  async runForEnabledClubs(): Promise<{
+    clubs: number;
+    notified: number;
+    matchesCreated: number;
+  }> {
     const clubs = await this.db.query<ClubRow>(
-      `SELECT id, name, auto_fill_gaps_enabled
+      `SELECT id, name, auto_fill_gaps_enabled,
+              COALESCE(gap_fill_hours_before, 8)::int AS gap_fill_hours_before,
+              COALESCE(gap_fill_auto_create_match, FALSE) AS gap_fill_auto_create_match,
+              COALESCE(gap_fill_notify_enabled, TRUE) AS gap_fill_notify_enabled,
+              zone
        FROM clubs
        WHERE auto_fill_gaps_enabled = TRUE`,
     );
 
     let notified = 0;
+    let matchesCreated = 0;
     for (const club of clubs.rows) {
       try {
-        notified += await this.processClub(club);
+        const result = await this.processClub(club);
+        notified += result.notified;
+        matchesCreated += result.matchesCreated;
       } catch (err) {
         this.logger.error(
           `Gap-fill falló para club ${club.id}: ${err instanceof Error ? err.message : err}`,
@@ -63,7 +77,7 @@ export class ClubGapFillService {
       }
     }
 
-    return { clubs: clubs.rows.length, notified };
+    return { clubs: clubs.rows.length, notified, matchesCreated };
   }
 
   /** Outreach inmediato cuando un turno vuelve a OPEN (p. ej. cancelación). */
@@ -100,13 +114,30 @@ export class ClubGapFillService {
     // Al liberar, siempre intentamos avisar a regulares aunque no sea valle histórico,
     // pero priorizamos franjas valle; si no es valle, igual notificamos (cancha liberada).
     return this.notifyCandidatesForSlot(
-      { id: slot.club_id, name: slot.club_name, auto_fill_gaps_enabled: true },
+      {
+        id: slot.club_id,
+        name: slot.club_name,
+        auto_fill_gaps_enabled: true,
+        gap_fill_hours_before: 8,
+        gap_fill_auto_create_match: false,
+        gap_fill_notify_enabled: true,
+      },
       slot,
       isValley ? 'valley' : 'released',
     );
   }
 
   async getDemandInsights(clubId: string) {
+    const club = await this.db.query<ClubRow>(
+      `SELECT id, name, auto_fill_gaps_enabled,
+              COALESCE(gap_fill_hours_before, 8)::int AS gap_fill_hours_before,
+              COALESCE(gap_fill_auto_create_match, FALSE) AS gap_fill_auto_create_match,
+              COALESCE(gap_fill_notify_enabled, TRUE) AS gap_fill_notify_enabled,
+              zone
+       FROM clubs WHERE id = $1`,
+      [clubId],
+    );
+    const config = club.rows[0];
     const valleys = await this.detectValleyBuckets(clubId);
     const withCandidates = await Promise.all(
       valleys.map(async (v) => {
@@ -130,24 +161,46 @@ export class ClubGapFillService {
     return {
       historyDays: HISTORY_DAYS,
       occupancyThresholdPct: Math.round(OCCUPANCY_THRESHOLD * 100),
+      rules: {
+        enabled: Boolean(config?.auto_fill_gaps_enabled),
+        hoursBefore: Number(config?.gap_fill_hours_before ?? 8),
+        autoCreateMatch: Boolean(config?.gap_fill_auto_create_match),
+        notifyEnabled: config?.gap_fill_notify_enabled !== false,
+      },
       valleys: withCandidates.sort(
         (a, b) => a.dayOfWeek - b.dayOfWeek || a.hourBucket - b.hourBucket,
       ),
     };
   }
 
-  private async processClub(club: ClubRow): Promise<number> {
+  private async processClub(
+    club: ClubRow,
+  ): Promise<{ notified: number; matchesCreated: number }> {
     const valleys = await this.detectValleyBuckets(club.id);
-    if (valleys.length === 0) return 0;
+    if (valleys.length === 0) return { notified: 0, matchesCreated: 0 };
 
     const valleyKeys = new Set(valleys.map((v) => `${v.dayOfWeek}:${v.hourBucket}`));
-    const slots = await this.listOpenValleySlots(club.id, valleyKeys);
+    const hoursBefore = Math.min(72, Math.max(1, Number(club.gap_fill_hours_before || 8)));
+    const slots = await this.listOpenValleySlots(club.id, valleyKeys, hoursBefore);
 
     let notified = 0;
+    let matchesCreated = 0;
     for (const slot of slots) {
-      notified += await this.notifyCandidatesForSlot(club, slot, 'valley');
+      if (club.gap_fill_auto_create_match) {
+        const created = await this.autoCreateOpenMatch(club, slot);
+        if (created) {
+          matchesCreated += 1;
+          if (club.gap_fill_notify_enabled !== false) {
+            notified += await this.notifyCandidatesForSlot(club, slot, 'valley', created.matchId);
+          }
+          continue;
+        }
+      }
+      if (club.gap_fill_notify_enabled !== false) {
+        notified += await this.notifyCandidatesForSlot(club, slot, 'valley');
+      }
     }
-    return notified;
+    return { notified, matchesCreated };
   }
 
   async detectValleyBuckets(clubId: string): Promise<ValleyBucket[]> {
@@ -188,6 +241,7 @@ export class ClubGapFillService {
   private async listOpenValleySlots(
     clubId: string,
     valleyKeys: Set<string>,
+    hoursBefore: number,
   ): Promise<OpenSlotRow[]> {
     const result = await this.db.query<OpenSlotRow>(
       `SELECT cas.id,
@@ -205,17 +259,87 @@ export class ClubGapFillService {
          AND (cas.slot_date::timestamp + (cas.start_hour * INTERVAL '1 hour')) >= NOW()
          AND (cas.slot_date::timestamp + (cas.start_hour * INTERVAL '1 hour'))
              <= NOW() + ($2::int * INTERVAL '1 hour')
+         AND NOT EXISTS (
+           SELECT 1 FROM matches m
+           WHERE m.court_slot_id = cas.id
+             AND m.status NOT IN ('CANCELLED')
+         )
        ORDER BY cas.slot_date ASC, cas.start_hour ASC`,
-      [clubId, LOOKAHEAD_HOURS],
+      [clubId, hoursBefore],
     );
 
     return result.rows.filter((s) => valleyKeys.has(`${s.day_of_week}:${s.hour_bucket}`));
+  }
+
+  /** Publica un partido abierto y reserva el slot (estilo SmartClub). */
+  private async autoCreateOpenMatch(
+    club: ClubRow,
+    slot: OpenSlotRow,
+  ): Promise<{ matchId: string } | null> {
+    const admin = await this.db.query<{ user_id: string }>(
+      `SELECT user_id FROM club_admins WHERE club_id = $1 LIMIT 1`,
+      [club.id],
+    );
+    const createdBy = admin.rows[0]?.user_id;
+    if (!createdBy) {
+      this.logger.warn(`Club ${club.id} sin club_admins; no se auto-crea partido`);
+      return null;
+    }
+
+    const dateResult = await this.db.query<{ starts_at: string; ends_at: string }>(
+      `SELECT (cas.slot_date::timestamp + (cas.start_hour * INTERVAL '1 hour')) AS starts_at,
+              (cas.slot_date::timestamp + (cas.end_hour * INTERVAL '1 hour')) AS ends_at
+       FROM court_availability_slots cas
+       WHERE cas.id = $1 AND cas.status = 'OPEN'`,
+      [slot.id],
+    );
+    const startsAt = dateResult.rows[0]?.starts_at;
+    const endsAt = dateResult.rows[0]?.ends_at;
+    if (!startsAt) return null;
+
+    const dateLabel = String(slot.slot_date).slice(0, 10);
+    const title = `Partido abierto · ${slot.court_label}`;
+    const description = `Publicado automáticamente por Smart Fill · ${dateLabel} ${formatHourLabel(slot.start_hour)}–${formatHourLabel(slot.end_hour)}`;
+
+    const inserted = await this.db.query<{ id: string }>(
+      `INSERT INTO matches (
+         club_id, created_by_user_id, title, description, date, ends_at, zone,
+         level_min, level_max, gender, mode, needed_players, court_slot_id,
+         court_booking, status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open','friendly',4,$10,'in_app','OPEN')
+       RETURNING id`,
+      [
+        club.id,
+        createdBy,
+        title,
+        description,
+        startsAt,
+        endsAt ?? null,
+        club.zone ?? null,
+        0,
+        1000,
+        slot.id,
+      ],
+    );
+    const matchId = inserted.rows[0]?.id;
+    if (!matchId) return null;
+
+    await this.db.query(
+      `UPDATE court_availability_slots
+       SET status = 'BOOKED'
+       WHERE id = $1 AND club_id = $2 AND status = 'OPEN'`,
+      [slot.id, club.id],
+    );
+
+    this.logger.log(`Smart Fill: partido ${matchId} creado para slot ${slot.id} (${club.name})`);
+    return { matchId };
   }
 
   private async notifyCandidatesForSlot(
     club: ClubRow,
     slot: OpenSlotRow,
     reason: 'valley' | 'released',
+    matchId?: string,
   ): Promise<number> {
     const candidates = await this.findCandidateUserIds(
       club.id,
@@ -237,14 +361,16 @@ export class ClubGapFillService {
     const startLabel = formatHourLabel(slot.start_hour);
     const endLabel = formatHourLabel(slot.end_hour);
 
-    const title =
-      bonus > 0
+    const title = matchId
+      ? `Partido abierto en ${club.name}`
+      : bonus > 0
         ? `Horario con bonus (+${bonus} pts) · ${club.name}`
         : reason === 'released'
           ? `Cancha liberada en ${club.name}`
           : `Cancha libre en ${club.name}`;
-    const body =
-      bonus > 0
+    const body = matchId
+      ? `${slot.court_label} · ${dateLabel} ${startLabel}–${endLabel} · Unite al partido`
+      : bonus > 0
         ? `${slot.court_label} · ${dateLabel} ${startLabel}–${endLabel} · Sumá puntos del club`
         : `${slot.court_label} · ${dateLabel} ${startLabel}–${endLabel}`;
 
@@ -255,12 +381,13 @@ export class ClubGapFillService {
 
       await this.notifications.create({
         userId,
-        type: 'COURT_GAP_OFFER',
+        type: matchId ? 'OPEN_MATCH_CREATED' : 'COURT_GAP_OFFER',
         title,
         body,
         data: {
           clubId: club.id,
           slotId: slot.id,
+          matchId: matchId ?? null,
           slotDate: dateLabel,
           startHour: slot.start_hour,
           endHour: slot.end_hour,

@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { ClubGapFillService } from './club-gap-fill.service';
 import { ClubsService } from './clubs.service';
 
@@ -53,7 +54,51 @@ export class ClubManagerService {
     private readonly db: DatabaseService,
     private readonly clubsService: ClubsService,
     private readonly gapFillService: ClubGapFillService,
+    private readonly notifications: NotificationsService,
   ) {}
+
+  async notifySegment(
+    clubId: string,
+    userId: string,
+    input: {
+      segment: 'new' | 'frequent' | 'inactive' | 'top';
+      title: string;
+      body: string;
+      actionLabel?: string;
+    },
+  ) {
+    await this.clubsService.requireClubAdmin(clubId, userId);
+    const club = await this.clubsService.findOne(clubId);
+    const recipients = await this.queryClientSegment(clubId, input.segment, 100);
+    if (recipients.length === 0) {
+      throw new BadRequestException('No hay jugadores en ese segmento');
+    }
+
+    let sent = 0;
+    for (const row of recipients) {
+      await this.notifications.create({
+        userId: row.userId,
+        type: 'CLUB_SEGMENT_CAMPAIGN',
+        title: input.title,
+        body: input.body,
+        data: {
+          clubId,
+          clubName: club.name,
+          segment: input.segment,
+          actionLabel: input.actionLabel ?? null,
+        },
+      });
+      sent += 1;
+    }
+
+    return {
+      ok: true,
+      segment: input.segment,
+      sent,
+      clubId,
+      clubName: club.name,
+    };
+  }
 
   async getManagerReport(clubId: string, userId: string, periodDays = 30) {
     await this.clubsService.requireClubAdmin(clubId, userId);
@@ -857,6 +902,7 @@ export class ClubManagerService {
   private async queryClientSegment(
     clubId: string,
     segment: 'new' | 'frequent' | 'inactive' | 'top',
+    limit = 12,
   ) {
     let where = '';
     let order = 'cmp.last_played_at DESC NULLS LAST';
@@ -871,6 +917,8 @@ export class ClubManagerService {
       where = `AND cmp.matches_at_club >= 1`;
       order = 'cmp.matches_at_club DESC, cmp.points DESC';
     }
+
+    const safeLimit = Math.min(200, Math.max(1, limit));
 
     const result = await this.db.query<{
       user_id: string;
@@ -918,8 +966,8 @@ export class ClubManagerService {
        WHERE cmp.club_id = $1
          ${where}
        ORDER BY ${order}
-       LIMIT 12`,
-      [clubId],
+       LIMIT $2`,
+      [clubId, safeLimit],
     );
 
     return result.rows.map((row) => ({

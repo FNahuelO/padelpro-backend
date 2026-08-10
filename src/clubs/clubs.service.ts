@@ -190,6 +190,7 @@ export class ClubsService {
     const result = await this.db.query(
       `SELECT id, name, city, zone, address, phone, logo_url, cover_url, latitude, longitude,
               subscription_plan, auto_fill_gaps_enabled, court_price_per_hour, deposit_percent,
+              gap_fill_hours_before, gap_fill_auto_create_match, gap_fill_notify_enabled,
               created_at, updated_at
        FROM clubs
        WHERE id = $1`,
@@ -206,6 +207,9 @@ export class ClubsService {
       autoFillGapsEnabled: Boolean(club.auto_fill_gaps_enabled),
       courtPricePerHour: Number(club.court_price_per_hour ?? 0),
       depositPercent: Number(club.deposit_percent ?? 0),
+      gapFillHoursBefore: Number(club.gap_fill_hours_before ?? 8),
+      gapFillAutoCreateMatch: Boolean(club.gap_fill_auto_create_match),
+      gapFillNotifyEnabled: club.gap_fill_notify_enabled !== false,
     };
   }
 
@@ -1018,22 +1022,50 @@ export class ClubsService {
     };
   }
 
-  async setAutoFillGaps(clubId: string, userId: string, enabled: boolean) {
+  async setAutoFillGaps(
+    clubId: string,
+    userId: string,
+    input: {
+      enabled: boolean;
+      hoursBefore?: number;
+      autoCreateMatch?: boolean;
+      notifyEnabled?: boolean;
+    },
+  ) {
     await this.assertClubRole(userId, clubId);
     assertClubId(clubId);
+    const hoursBefore =
+      input.hoursBefore != null
+        ? Math.min(72, Math.max(1, Math.round(Number(input.hoursBefore))))
+        : null;
     const result = await this.db.query(
       `UPDATE clubs
-       SET auto_fill_gaps_enabled = $2, updated_at = NOW()
+       SET auto_fill_gaps_enabled = $2,
+           gap_fill_hours_before = COALESCE($3, gap_fill_hours_before),
+           gap_fill_auto_create_match = COALESCE($4, gap_fill_auto_create_match),
+           gap_fill_notify_enabled = COALESCE($5, gap_fill_notify_enabled),
+           updated_at = NOW()
        WHERE id = $1
-       RETURNING id, auto_fill_gaps_enabled`,
-      [clubId, enabled],
+       RETURNING id, auto_fill_gaps_enabled, gap_fill_hours_before,
+                 gap_fill_auto_create_match, gap_fill_notify_enabled`,
+      [
+        clubId,
+        input.enabled,
+        hoursBefore,
+        input.autoCreateMatch ?? null,
+        input.notifyEnabled ?? null,
+      ],
     );
     if (!result.rows[0]) {
       throw new NotFoundException('Club no encontrado');
     }
+    const row = result.rows[0];
     return {
-      id: result.rows[0].id,
-      autoFillGapsEnabled: Boolean(result.rows[0].auto_fill_gaps_enabled),
+      id: row.id,
+      autoFillGapsEnabled: Boolean(row.auto_fill_gaps_enabled),
+      gapFillHoursBefore: Number(row.gap_fill_hours_before ?? 8),
+      gapFillAutoCreateMatch: Boolean(row.gap_fill_auto_create_match),
+      gapFillNotifyEnabled: row.gap_fill_notify_enabled !== false,
     };
   }
 
@@ -1175,12 +1207,20 @@ export class ClubsService {
         `SELECT md.id,
                 md.amount,
                 md.status,
+                md.provider,
+                md.checkout_url,
+                md.provider_payment_id,
+                md.match_id,
                 COALESCE(md.paid_at, md.updated_at) AS occurred_at,
                 u.name AS user_name,
-                m.title AS match_title
+                m.title AS match_title,
+                m.date AS match_date,
+                m.court_slot_id,
+                cas.court_label
          FROM match_deposits md
          INNER JOIN matches m ON m.id = md.match_id
          INNER JOIN users u ON u.id = md.user_id
+         LEFT JOIN court_availability_slots cas ON cas.id = m.court_slot_id
          WHERE m.club_id = $1 AND md.status IN ('APPROVED', 'PENDING')
            AND COALESCE(md.paid_at, md.updated_at) ${periodFilter}
          ORDER BY occurred_at DESC
@@ -1221,6 +1261,12 @@ export class ClubsService {
         amount: Number(row.amount),
         status: row.status,
         occurredAt: row.occurred_at,
+        matchId: row.match_id ?? null,
+        provider: row.provider ?? null,
+        checkoutUrl: row.checkout_url ?? null,
+        providerPaymentId: row.provider_payment_id ?? null,
+        matchDate: row.match_date ?? null,
+        courtLabel: row.court_label ?? null,
       })),
       ...recentShop.rows.map((row) => ({
         id: row.id,
@@ -1230,6 +1276,12 @@ export class ClubsService {
         amount: Number(row.amount),
         status: row.status,
         occurredAt: row.occurred_at,
+        matchId: null as string | null,
+        provider: null as string | null,
+        checkoutUrl: null as string | null,
+        providerPaymentId: null as string | null,
+        matchDate: null as string | null,
+        courtLabel: null as string | null,
       })),
     ]
       .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
