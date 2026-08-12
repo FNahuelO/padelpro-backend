@@ -27,6 +27,14 @@ export class UpdateClubDto {
 
   @IsOptional()
   @IsString()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
   logoUrl?: string;
 
   /** Plan del club: define multiplicador en horarios promocionales (GROWTH x1.5, PRO x2). */

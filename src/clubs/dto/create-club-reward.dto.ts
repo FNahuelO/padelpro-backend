@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateClubRewardDto {
@@ -8,6 +9,7 @@ export class CreateClubRewardDto {
   @IsString()
   description?: string;
 
+  @Type(() => Number)
   @IsInt()
   @Min(1)
   pointsRequired: number;

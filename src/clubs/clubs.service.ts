@@ -188,7 +188,7 @@ export class ClubsService {
   async findOne(id: string) {
     assertClubId(id);
     const result = await this.db.query(
-      `SELECT id, name, city, zone, address, phone, logo_url, cover_url, latitude, longitude,
+      `SELECT id, name, city, zone, address, phone, email, description, logo_url, cover_url, latitude, longitude,
               subscription_plan, auto_fill_gaps_enabled, court_price_per_hour, deposit_percent,
               gap_fill_hours_before, gap_fill_auto_create_match, gap_fill_notify_enabled,
               created_at, updated_at
@@ -274,9 +274,11 @@ export class ClubsService {
            longitude = COALESCE($10, longitude),
            court_price_per_hour = COALESCE($11, court_price_per_hour),
            deposit_percent = COALESCE($12, deposit_percent),
+           email = COALESCE($13, email),
+           description = COALESCE($14, description),
            updated_at = NOW()
        WHERE id = $1
-       RETURNING id, name, city, zone, address, phone, logo_url, latitude, longitude,
+       RETURNING id, name, city, zone, address, phone, email, description, logo_url, latitude, longitude,
                  subscription_plan, auto_fill_gaps_enabled, court_price_per_hour, deposit_percent,
                  created_at, updated_at`,
       [
@@ -292,6 +294,8 @@ export class ClubsService {
         dto.longitude ?? null,
         dto.courtPricePerHour ?? null,
         dto.depositPercent ?? null,
+        dto.email ?? null,
+        dto.description ?? null,
       ],
     );
     const club = result.rows[0];
