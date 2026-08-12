@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import { IsEnum, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import type { ClubSubscriptionPlan } from '../../common/utils/club-plan.util';
 
@@ -34,12 +35,14 @@ export class UpdateClubDto {
   subscriptionPlan?: ClubSubscriptionPlan;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(-90)
   @Max(90)
   latitude?: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(-180)
   @Max(180)
@@ -47,12 +50,14 @@ export class UpdateClubDto {
 
   /** Tarifa base por hora de cancha (sugerida al publicar turnos). */
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   courtPricePerHour?: number;
 
   /** Porcentaje de seña sobre el precio (0–100). */
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   @Max(100)
