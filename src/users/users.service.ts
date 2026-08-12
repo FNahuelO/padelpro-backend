@@ -61,7 +61,19 @@ export class UsersService {
 
   private parseExtras(row: { extras?: unknown } | undefined): Extras {
     const raw = row?.extras;
-    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    if (!raw) return {};
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Extras;
+        }
+      } catch {
+        return {};
+      }
+      return {};
+    }
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
       return raw as Extras;
     }
     return {};
@@ -124,7 +136,9 @@ export class UsersService {
     }
 
     const location =
-      (extras.location as string) ||
+      (typeof extras.location === 'string' && extras.location.trim()
+        ? extras.location.trim()
+        : undefined) ||
       [row.zone, row.city].filter(Boolean).join(', ') ||
       undefined;
 
@@ -138,6 +152,8 @@ export class UsersService {
       description: row.bio || '',
       photo: row.photo_url ?? undefined,
       location,
+      city: row.city || undefined,
+      zone: row.zone || undefined,
       dni: (extras.dni as string) || undefined,
       fejubaId: (extras.fejubaId as string) || undefined,
       fejubaCategory: (extras.fejubaCategory as string) || undefined,
@@ -427,7 +443,6 @@ export class UsersService {
     if (dto.gender !== undefined) extras.gender = dto.gender;
     if (dto.birthDate !== undefined) extras.birthDate = dto.birthDate;
     if (dto.mainClubId !== undefined) extras.mainClubId = dto.mainClubId;
-    if (dto.location !== undefined) extras.location = dto.location;
     if (dto.declaredCategory !== undefined) {
       const hasFederatedCategory = Boolean(extras.fejubaId || extras.fejubaCategory);
       if (hasFederatedCategory) {
@@ -457,12 +472,25 @@ export class UsersService {
     }
 
     const bio = dto.description !== undefined ? dto.description : prow.bio;
-    const city = dto.location !== undefined ? dto.location : prow.city;
     const hasCoords = dto.latitude != null && dto.longitude != null;
-    const zoneHint =
+    const locationLabel =
       dto.location !== undefined && typeof dto.location === 'string' && dto.location.trim()
-        ? dto.location.split(',')[0]?.trim() || null
+        ? dto.location.trim()
         : null;
+    // location canónica en extras; zone/city se derivan para listados y compatibilidad.
+    if (locationLabel != null) {
+      extras.location = locationLabel;
+    } else if (dto.location === null) {
+      delete extras.location;
+    }
+    const locationParts = locationLabel
+      ? locationLabel.split(',').map((part) => part.trim()).filter(Boolean)
+      : [];
+    const zoneHint = locationParts[0] || null;
+    const cityHint =
+      locationParts.length > 1 ? locationParts.slice(1).join(', ') : locationParts[0] || null;
+    const city =
+      dto.location !== undefined ? cityHint : prow.city;
 
     await this.db.query(
       `UPDATE players

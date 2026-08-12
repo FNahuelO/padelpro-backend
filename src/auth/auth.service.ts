@@ -250,7 +250,16 @@ export class AuthService {
     const extras =
       user?.extras && typeof user.extras === 'object' && !Array.isArray(user.extras)
         ? user.extras
-        : {};
+        : typeof user?.extras === 'string'
+          ? (() => {
+              try {
+                const parsed = JSON.parse(user.extras);
+                return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+              } catch {
+                return {};
+              }
+            })()
+          : {};
     const rating = resolvePlayerRating(user ?? {});
     const declaredCategory =
       typeof extras.declaredCategory === 'string' ? extras.declaredCategory : undefined;
@@ -261,6 +270,12 @@ export class AuthService {
       user.placement_matches_played != null
         ? Number(user.placement_matches_played)
         : undefined;
+    const location =
+      (typeof extras.location === 'string' && extras.location.trim()
+        ? extras.location.trim()
+        : undefined) ||
+      [user.zone, user.city].filter(Boolean).join(', ') ||
+      undefined;
 
     return {
       id: user.id,
@@ -271,6 +286,7 @@ export class AuthService {
       nickname: user.nickname ?? undefined,
       gender: typeof extras.gender === 'string' ? extras.gender : undefined,
       birthDate: typeof extras.birthDate === 'string' ? extras.birthDate : undefined,
+      location,
       dni: typeof extras.dni === 'string' ? extras.dni : undefined,
       fejubaId: typeof extras.fejubaId === 'string' ? extras.fejubaId : undefined,
       fejubaCategory:
@@ -287,6 +303,8 @@ export class AuthService {
       categoryStatus,
       placementMatchesPlayed,
       placementMatchesRequired: categoryStatus != null ? PLACEMENT_MATCHES_REQUIRED : undefined,
+      mainClubId:
+        typeof extras.mainClubId === 'string' ? extras.mainClubId : undefined,
     };
   }
 }

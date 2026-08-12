@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import { IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
 export class UpdateProfileDto {
@@ -34,12 +35,14 @@ export class UpdateProfileDto {
   declaredCategory?: '8va' | '7ma' | '6ta' | '5ta' | '4ta' | '3ra' | '2da' | '1ra' | null;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(-90)
   @Max(90)
   latitude?: number | null;
 
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(-180)
   @Max(180)
