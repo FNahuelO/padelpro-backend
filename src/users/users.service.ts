@@ -11,6 +11,8 @@ import {
   PLACEMENT_MATCHES_REQUIRED,
   getMonthKey,
   resolveVisibleLevelCategory,
+  getInitialRatingForCategory,
+  type PlayerCategory,
 } from '../common/utils';
 import { ratingToSkillScore, resolvePlayerRating } from '../common/utils/player-rating.util';
 import { deleteCloudinaryAsset, uploadImageBuffer } from '../common/cloudinary/cloudinary.util';
@@ -409,15 +411,18 @@ export class UsersService {
 
     await this.ensurePlayerProfile(userId);
 
-    const ures = await this.db.query(`SELECT id, bio, city, extras FROM players WHERE user_id = $1`, [
-      userId,
-    ]);
+    const ures = await this.db.query(
+      `SELECT id, bio, city, extras, rating, category_status, placement_matches_played
+       FROM players WHERE user_id = $1`,
+      [userId],
+    );
     const prow = ures.rows[0];
     if (!prow) {
       throw new NotFoundException('No se pudo crear el perfil de jugador');
     }
 
     const extras = this.parseExtras(prow);
+    let seedRating: number | null = null;
     if (dto.phone !== undefined) extras.phone = dto.phone;
     if (dto.gender !== undefined) extras.gender = dto.gender;
     if (dto.birthDate !== undefined) extras.birthDate = dto.birthDate;
@@ -442,6 +447,12 @@ export class UsersService {
         delete extras.declaredCategory;
       } else {
         extras.declaredCategory = dto.declaredCategory;
+        const status = normalizeCategoryStatus(prow.category_status);
+        const played = Number(prow.placement_matches_played ?? 0);
+        // Al declarar categoría al inicio: piso de la banda (0 puntos de progreso).
+        if (status === 'provisional' && played === 0) {
+          seedRating = getInitialRatingForCategory(dto.declaredCategory as PlayerCategory);
+        }
       }
     }
 
@@ -462,6 +473,7 @@ export class UsersService {
            latitude = CASE WHEN $5 THEN $6 ELSE latitude END,
            longitude = CASE WHEN $5 THEN $7 ELSE longitude END,
            location_updated_at = CASE WHEN $5 THEN NOW() ELSE location_updated_at END,
+           rating = CASE WHEN $9::int IS NOT NULL THEN $9 ELSE rating END,
            updated_at = NOW()
        WHERE user_id = $1`,
       [
@@ -473,6 +485,7 @@ export class UsersService {
         hasCoords ? dto.latitude : null,
         hasCoords ? dto.longitude : null,
         zoneHint,
+        seedRating,
       ],
     );
 

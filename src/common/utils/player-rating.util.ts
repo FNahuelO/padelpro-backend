@@ -4,7 +4,7 @@ export const DEFAULT_SKILL_SCORE = 400;
 export const MIN_VISIBLE_SKILL_SCORE = 0;
 export const MAX_VISIBLE_SKILL_SCORE = 1000;
 
-/** Rating inicial al registrarse (skill visible = 0). */
+/** Rating inicial al registrarse sin categoría (skill visible = 0). */
 export const PLACEMENT_INITIAL_RATING = 500;
 /** Partidos competitivos confirmados para salir de nivelación. */
 export const PLACEMENT_MATCHES_REQUIRED = 5;
@@ -16,15 +16,19 @@ export type CategoryStatus = 'provisional' | 'confirmed';
 export const PLAYER_CATEGORIES = ['8va', '7ma', '6ta', '5ta', '4ta', '3ra', '2da', '1ra'] as const;
 export type PlayerCategory = (typeof PLAYER_CATEGORIES)[number];
 
+/**
+ * Rating inicial = piso de la categoría (0% de progreso dentro de la banda).
+ * Coincide con getCategoryRatingRange(min), salvo 8va que usa 500 → skill 0.
+ */
 const CATEGORY_TO_INITIAL_RATING: Record<PlayerCategory, number> = {
   '8va': 500,
-  '7ma': 700,
-  '6ta': 900,
-  '5ta': 1100,
-  '4ta': 1300,
-  '3ra': 1550,
-  '2da': 1850,
-  '1ra': 2100,
+  '7ma': 600,
+  '6ta': 800,
+  '5ta': 1000,
+  '4ta': 1200,
+  '3ra': 1400,
+  '2da': 1700,
+  '1ra': 2000,
 };
 
 const RATING_SKILL_ANCHORS = [

@@ -24,9 +24,17 @@ describe('player-rating.util', () => {
     expect(ratingToSkillScore(2200)).toBe(1000);
   });
 
-  it('siembra el rating inicial desde la categoría autodeclarada (legacy / seeds)', () => {
-    expect(getInitialRatingForCategory('8va')).toBeLessThan(getInitialRatingForCategory('5ta'));
-    expect(getInitialRatingForCategory('1ra')).toBeGreaterThan(getInitialRatingForCategory('2da'));
+  it('siembra el rating en el piso de la categoría (0% de progreso)', () => {
+    expect(getInitialRatingForCategory('8va')).toBe(500);
+    expect(getInitialRatingForCategory('7ma')).toBe(600);
+    expect(getInitialRatingForCategory('6ta')).toBe(800);
+    expect(getInitialRatingForCategory('5ta')).toBe(1000);
+    expect(getInitialRatingForCategory('4ta')).toBe(1200);
+    expect(getInitialRatingForCategory('3ra')).toBe(1400);
+    expect(getInitialRatingForCategory('2da')).toBe(1700);
+    expect(getInitialRatingForCategory('1ra')).toBe(2000);
+    expect(ratingToSkillScore(getInitialRatingForCategory('5ta'))).toBe(400);
+    expect(ratingToSkillScore(getInitialRatingForCategory('8va'))).toBe(0);
   });
 
   it('usa rating 500 como skill 0 para nuevos jugadores en nivelación', () => {

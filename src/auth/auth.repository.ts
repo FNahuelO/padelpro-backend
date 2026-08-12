@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
+  DEFAULT_PLAYER_RATING,
   getInitialRatingForCategory,
   PLACEMENT_INITIAL_RATING,
   PLACEMENT_MATCHES_REQUIRED,
@@ -114,9 +115,12 @@ export class AuthRepository {
     const startsInPlacement = !isFederated && options?.startInPlacement === true;
     const categoryStatus = startsInPlacement ? 'provisional' : 'confirmed';
     const placementMatchesPlayed = startsInPlacement ? 0 : PLACEMENT_MATCHES_REQUIRED;
-    const rating = startsInPlacement
-      ? PLACEMENT_INITIAL_RATING
-      : getInitialRatingForCategory(declaredCategory);
+    // Con categoría: piso de la banda (0% de progreso). Sin categoría en nivelación: skill 0.
+    const rating = declaredCategory
+      ? getInitialRatingForCategory(declaredCategory)
+      : startsInPlacement
+        ? PLACEMENT_INITIAL_RATING
+        : DEFAULT_PLAYER_RATING;
 
     await this.db.query(
       `INSERT INTO players (
