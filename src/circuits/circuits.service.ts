@@ -56,7 +56,7 @@ export class CircuitsService {
 
     const [categories, venues, stages, rankings] = await Promise.all([
       this.db.query(
-        `SELECT id, circuit_id, label, sort_order, created_at
+        `SELECT id, circuit_id, label, gender, sort_order, created_at
          FROM circuit_categories
          WHERE circuit_id = $1
          ORDER BY sort_order ASC, label ASC`,
@@ -111,10 +111,10 @@ export class CircuitsService {
     await this.ensureCircuit(circuitId);
 
     const result = await this.db.query(
-      `INSERT INTO circuit_categories (circuit_id, label, sort_order)
-       VALUES ($1, $2, COALESCE($3, 0))
+      `INSERT INTO circuit_categories (circuit_id, label, gender, sort_order)
+       VALUES ($1, $2, $3, COALESCE($4, 0))
        RETURNING *`,
-      [circuitId, dto.label.trim(), dto.sortOrder ?? null],
+      [circuitId, dto.label.trim(), dto.gender ?? null, dto.sortOrder ?? null],
     );
     return result.rows[0];
   }
