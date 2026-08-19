@@ -439,6 +439,11 @@ export class UsersService {
 
     const extras = this.parseExtras(prow);
     let seedRating: number | null = null;
+    let nickname: string | null | undefined;
+    if (dto.nickname !== undefined) {
+      const normalized = dto.nickname?.trim().toLowerCase();
+      nickname = normalized ? normalized : null;
+    }
     if (dto.phone !== undefined) extras.phone = dto.phone;
     if (dto.gender !== undefined) extras.gender = dto.gender;
     if (dto.birthDate !== undefined) extras.birthDate = dto.birthDate;
@@ -498,6 +503,7 @@ export class UsersService {
            city = $3,
            zone = CASE WHEN $8::text IS NOT NULL THEN $8 ELSE zone END,
            extras = $4::jsonb,
+           nickname = COALESCE($10::text, nickname),
            latitude = CASE WHEN $5 THEN $6 ELSE latitude END,
            longitude = CASE WHEN $5 THEN $7 ELSE longitude END,
            location_updated_at = CASE WHEN $5 THEN NOW() ELSE location_updated_at END,
@@ -514,6 +520,7 @@ export class UsersService {
         hasCoords ? dto.longitude : null,
         zoneHint,
         seedRating,
+        nickname,
       ],
     );
 

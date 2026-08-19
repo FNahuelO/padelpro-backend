@@ -217,6 +217,75 @@ export class MatchesRepository {
     }
 
     const joinedCount = players.rows.length + guests.rows.length;
+
+    let courtSlot: {
+      court_label: string;
+      start_hour: number;
+      end_hour: number;
+      bonus_points: number;
+      price_per_hour: number;
+    } | null = null;
+    if (match.court_slot_id) {
+      const slotResult = await this.db.query(
+        `SELECT court_label, start_hour, end_hour, bonus_points, price_per_hour
+         FROM court_availability_slots
+         WHERE id = $1`,
+        [match.court_slot_id],
+      );
+      courtSlot = slotResult.rows[0] ?? null;
+    }
+
+    let clubPricing: { court_price_per_hour: number; deposit_percent: number } | null = null;
+    if (match.club_id) {
+      const pricingResult = await this.db.query(
+        `SELECT court_price_per_hour, deposit_percent FROM clubs WHERE id = $1`,
+        [match.club_id],
+      );
+      clubPricing = pricingResult.rows[0] ?? null;
+    }
+
+    const neededPlayers = Number(match.needed_players) || 4;
+    let durationMinutes = 90;
+    if (courtSlot) {
+      durationMinutes = Math.max(
+        30,
+        (Number(courtSlot.end_hour) - Number(courtSlot.start_hour)) * 60,
+      );
+    } else if (match.ends_at && match.date) {
+      const diffMs = new Date(match.ends_at).getTime() - new Date(match.date).getTime();
+      if (diffMs > 0) durationMinutes = Math.round(diffMs / 60000);
+    }
+
+    const pricePerHour = Number(courtSlot?.price_per_hour ?? clubPricing?.court_price_per_hour ?? 0);
+    const durationHours = durationMinutes / 60;
+    const totalCourt = pricePerHour * durationHours;
+    const pricePerPlayer =
+      neededPlayers > 0 && totalCourt > 0
+        ? Math.round((totalCourt / neededPlayers) * 100) / 100
+        : 0;
+    const depositPercent = Number(clubPricing?.deposit_percent ?? 25);
+    const depositPerPlayer =
+      pricePerPlayer > 0
+        ? Math.round(((pricePerPlayer * depositPercent) / 100) * 100) / 100
+        : 0;
+    const bonusPoints = Number(courtSlot?.bonus_points ?? 0);
+
+    const courtInfo = {
+      label: courtSlot?.court_label ?? null,
+      duration_minutes: durationMinutes,
+      cancel_policy: '30 min para cancelar gratis',
+    };
+
+    const pricing =
+      pricePerPlayer > 0 || depositPerPlayer > 0 || bonusPoints > 0
+        ? {
+            price_per_player: pricePerPlayer,
+            deposit_amount: depositPerPlayer,
+            currency: 'ARS',
+            bonus_points: bonusPoints,
+          }
+        : null;
+
     const row = resultRow.rows[0];
     const disputedAt = match.disputed_at ?? null;
     const rivalReviewDeadline = match.rival_review_deadline_at ?? null;
@@ -233,6 +302,8 @@ export class MatchesRepository {
       rival_review_deadline_at: rivalReviewDeadline,
       can_submit_rival_reviews: canSubmitRivalReviews,
       club,
+      court_info: courtInfo,
+      pricing,
       joined_count: joinedCount,
       needed_players: match.needed_players,
       players: players.rows.map((p) => {

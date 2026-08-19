@@ -1,10 +1,31 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsIn, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import {
+  IsDateString,
+  IsIn,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+  MinLength,
+} from 'class-validator';
 
 export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(20)
+  @Matches(/^[a-zA-Z0-9._]+$/, {
+    message: 'El nombre de usuario solo puede tener letras, números, punto y guión bajo',
+  })
+  nickname?: string | null;
 
   @IsOptional()
   @IsString()

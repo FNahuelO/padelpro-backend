@@ -17,6 +17,7 @@ import { CreateMatchResultDto } from './dto/create-match-result.dto';
 import { ConfirmMatchResultDto } from './dto/confirm-match-result.dto';
 import { RejectMatchResultDto } from './dto/reject-match-result.dto';
 import { UpdateMatchStatusDto } from './dto/update-match-status.dto';
+import { AddMatchInvitesDto } from './dto/add-match-invites.dto';
 
 @Controller('matches')
 @UseGuards(JwtAuthGuard)
@@ -66,6 +67,11 @@ export class MatchesController {
   @Post(':id/join')
   joinMatch(@Param('id') id: string, @CurrentUser() user: any) {
     return this.matchesService.joinMatch(id, user.sub);
+  }
+
+  @Post(':id/invites')
+  addInvites(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: AddMatchInvitesDto) {
+    return this.matchesService.addInvites(id, user.sub, dto);
   }
 
   @Post(':id/join-requests/:userId/accept')

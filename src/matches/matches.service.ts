@@ -17,6 +17,7 @@ import { resolveVisibleLevelCategory, resolvePlayerRating, PLACEMENT_ELO_K_FACTO
 import { CreateMatchDto, type CourtBookingMode } from './dto/create-match.dto';
 import { ListOpenMatchesQueryDto } from './dto/list-open-matches.query.dto';
 import { MatchInviteDto } from './dto/match-invite.dto';
+import { AddMatchInvitesDto } from './dto/add-match-invites.dto';
 import { CreateMatchResultDto } from './dto/create-match-result.dto';
 import { ConfirmMatchResultDto } from './dto/confirm-match-result.dto';
 import { RejectMatchResultDto } from './dto/reject-match-result.dto';
@@ -980,5 +981,95 @@ export class MatchesService {
       result: detail.result,
       canSubmitRivalReviews: detail.can_submit_rival_reviews,
     };
+  }
+
+  async addInvites(matchId: string, inviterUserId: string, dto: AddMatchInvitesDto) {
+    const invites = dto.invites ?? [];
+    if (!invites.length) {
+      throw new BadRequestException('Indicá al menos un invitado');
+    }
+
+    const match = await this.matchesRepository.getById(matchId);
+    if (!match) {
+      throw new NotFoundException('Partido no encontrado');
+    }
+
+    if (!['OPEN', 'FULL'].includes(String(match.status))) {
+      throw new BadRequestException('Este partido ya no acepta invitaciones');
+    }
+
+    const detail = await this.matchesRepository.getDetail(matchId);
+    if (!detail) {
+      throw new NotFoundException('Partido no encontrado');
+    }
+
+    const isOrganizer = match.created_by_user_id === inviterUserId;
+    const isParticipant = detail.players.some((player: { id: string }) => player.id === inviterUserId);
+    if (!isOrganizer && !isParticipant) {
+      throw new ForbiddenException('Solo jugadores del partido pueden invitar');
+    }
+
+    const joinedCount = await this.matchesRepository.countJoinedPlayers(matchId);
+    const availableSlots = Number(match.needed_players) - joinedCount;
+    if (availableSlots <= 0) {
+      throw new BadRequestException('El partido ya está completo');
+    }
+    if (invites.length > availableSlots) {
+      throw new BadRequestException(
+        availableSlots === 1
+          ? 'Solo queda 1 lugar disponible'
+          : `Solo quedan ${availableSlots} lugares disponibles`,
+      );
+    }
+
+    const existingUserIds = new Set(
+      detail.players.map((player: { id: string }) => player.id).filter(Boolean),
+    );
+    const invitedUserIds = invites.map((invite) => invite.userId).filter((value): value is string => !!value);
+    if (new Set(invitedUserIds).size !== invitedUserIds.length) {
+      throw new BadRequestException('No podés invitar al mismo jugador más de una vez');
+    }
+    for (const userId of invitedUserIds) {
+      if (userId === inviterUserId) {
+        throw new BadRequestException('No podés invitarte a vos mismo');
+      }
+      if (existingUserIds.has(userId)) {
+        throw new BadRequestException('Uno de los jugadores ya forma parte del partido');
+      }
+    }
+
+    for (const invite of invites) {
+      const slotOrder = await this.nextAvailableSlotOrder(matchId);
+      const role = invite.role ?? 'opponent';
+
+      if (invite.userId) {
+        const invitedPlayerId = await this.matchesRepository.getPlayerIdByUserId(invite.userId);
+        if (!invitedPlayerId) {
+          throw new BadRequestException('Uno de los jugadores invitados no tiene perfil de jugador');
+        }
+        await this.matchesRepository.join(matchId, invitedPlayerId, 'JOINED', slotOrder);
+        existingUserIds.add(invite.userId);
+        continue;
+      }
+
+      if (invite.guestName?.trim()) {
+        await this.matchesRepository.addGuestInvite({
+          matchId,
+          name: invite.guestName.trim(),
+          role,
+          slotOrder,
+          invitedByUserId: inviterUserId,
+          sponsorUserId: inviterUserId,
+        });
+        continue;
+      }
+
+      throw new BadRequestException('Cada invitación debe tener un jugador o un invitado externo');
+    }
+
+    await this.syncMatchCapacityStatus(matchId);
+    const updated = await this.findOne(matchId, inviterUserId);
+    this.realtimeGateway.emitMatchUpdated(updated);
+    return updated;
   }
 }

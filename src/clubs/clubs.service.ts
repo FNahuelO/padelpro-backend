@@ -1331,16 +1331,20 @@ export class ClubsService {
 
     const [wallet, monthly] = await Promise.all([
       this.db.query(
-        `SELECT points, matches_at_club, last_played_at
+        `SELECT COALESCE(SUM(points), 0)::int AS points,
+                COALESCE(SUM(matches_at_club), 0)::int AS matches_at_club,
+                MAX(last_played_at) AS last_played_at
          FROM club_member_points
-         WHERE club_id = $1 AND user_id = $2`,
-        [clubId, userId],
+         WHERE user_id = $1`,
+        [userId],
       ),
       this.db.query(
-        `SELECT points, matches_played, updated_at
+        `SELECT COALESCE(SUM(points), 0)::int AS points,
+                COALESCE(SUM(matches_played), 0)::int AS matches_played,
+                MAX(updated_at) AS updated_at
          FROM club_member_monthly_points
-         WHERE club_id = $1 AND user_id = $2 AND month_key = $3`,
-        [clubId, userId, month],
+         WHERE user_id = $1 AND month_key = $2`,
+        [userId, month],
       ),
     ]);
 
@@ -1371,28 +1375,72 @@ export class ClubsService {
     }
 
     const balanceResult = await this.db.query(
-      `SELECT points FROM club_member_points WHERE club_id = $1 AND user_id = $2`,
-      [clubId, userId],
+      `SELECT COALESCE(SUM(points), 0)::int AS points
+       FROM club_member_points
+       WHERE user_id = $1`,
+      [userId],
     );
-    const balance = balanceResult.rows[0]?.points ?? 0;
+    const balance = Number(balanceResult.rows[0]?.points ?? 0);
     if (balance < reward.points_required) {
       throw new BadRequestException(
         `Te faltan ${reward.points_required - balance} puntos para canjear este premio`,
       );
     }
 
-    await this.db.query(
-      `UPDATE club_member_points
-       SET points = points - $3, updated_at = NOW()
-       WHERE club_id = $1 AND user_id = $2`,
-      [clubId, userId, reward.points_required],
+    const deductionsResult = await this.db.query<{
+      club_id: string;
+      deducted: number;
+    }>(
+      `WITH balances AS (
+         SELECT club_id,
+                points,
+                SUM(points) OVER (
+                  ORDER BY
+                    CASE WHEN club_id = $2 THEN 0 ELSE 1 END,
+                    points DESC,
+                    club_id ASC
+                ) AS running_points
+         FROM club_member_points
+         WHERE user_id = $1 AND points > 0
+       ),
+       cuts AS (
+         SELECT club_id,
+                GREATEST(
+                  0,
+                  LEAST(points, $3 - (running_points - points))
+                )::int AS deducted
+         FROM balances
+         WHERE (running_points - points) < $3
+       ),
+       updated AS (
+         UPDATE club_member_points cmp
+         SET points = cmp.points - cuts.deducted,
+             updated_at = NOW()
+         FROM cuts
+         WHERE cmp.user_id = $1
+           AND cmp.club_id = cuts.club_id
+           AND cuts.deducted > 0
+         RETURNING cmp.club_id, cuts.deducted
+       )
+       SELECT club_id, deducted
+       FROM updated`,
+      [userId, clubId, reward.points_required],
     );
+    const deductedTotal = deductionsResult.rows.reduce(
+      (sum, row) => sum + Number(row.deducted ?? 0),
+      0,
+    );
+    if (deductedTotal < Number(reward.points_required)) {
+      throw new BadRequestException('No se pudo descontar el saldo global de puntos');
+    }
 
-    await this.db.query(
-      `INSERT INTO club_points_ledger (club_id, user_id, amount, reason, reference_id)
-       VALUES ($1, $2, $3, 'REWARD_REDEEM', $4)`,
-      [clubId, userId, -reward.points_required, rewardId],
-    );
+    for (const row of deductionsResult.rows) {
+      await this.db.query(
+        `INSERT INTO club_points_ledger (club_id, user_id, amount, reason, reference_id)
+         VALUES ($1, $2, $3, 'REWARD_REDEEM', $4)`,
+        [row.club_id, userId, -Number(row.deducted), rewardId],
+      );
+    }
 
     await this.db.query(
       `INSERT INTO club_reward_redemptions (club_id, user_id, reward_id, points_spent)
